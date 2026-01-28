@@ -22,7 +22,7 @@ Build backtesting infrastructure to validate the Turtle Trading Bot against hist
 | **Starting Equity** | **Configurable** (default $50K) | Test with $10K, $50K, $200K, etc. |
 | **Systems** | S1 + S2 (full system) | No point testing partial rules |
 | **Pyramiding** | Yes | Core Turtle rule |
-| **Position Limits** | 4/6/12 units | Full rule enforcement |
+| **Position Limits** | ⚠️ **Needs Update** - see Part 6.5 | Original 4/6/12 too restrictive for 228 markets |
 | **Size < 1 contract** | Skip trade | Truncate to 0, don't round up (Curtis Faith) |
 | **Signal Priority** | Buy Strength, Sell Weakness | Rank by (price - breakout) / N |
 
@@ -709,6 +709,71 @@ short_signals = sorted([s for s in signals_with_strength if s[0].direction == "S
 ```
 
 **Additional Rule:** Only enter one Unit in a single market at a time when multiple signals fire.
+
+---
+
+## Part 6.5: Code Review Findings ⚠️
+
+### Critical Finding: Position Limits Need Update for 228 Markets
+
+Based on Jerry Parker interviews, the original Turtle rules (designed for ~20 markets) need adjustment for 228+ markets.
+
+#### Current Code Issues
+
+**1. MAX_UNITS_TOTAL = 12 is too restrictive** (`rules.py:77`)
+
+| Approach | Max Units | Risk per Unit | Total Risk |
+|----------|-----------|---------------|------------|
+| Original Turtles (20 markets) | 12 | 1-2% | 12-24% |
+| Current Code (228 markets) | 12 | 0.5% | **6%** ❌ |
+| Parker Modern (300+ markets) | ~40 | 0.5% | **20%** ✅ |
+
+With 228 markets and only 12 total units allowed, the bot can only hold positions in 5% of the universe!
+
+**Recommendation:** Change from unit count limit to **Total Risk Cap**:
+```python
+# Instead of: MAX_UNITS_TOTAL = 12
+# Use: MAX_TOTAL_RISK = Decimal("0.20")  # 20% of equity
+# This allows: 20% / 0.5% = 40 units
+```
+
+**2. Sizing code rounds up incorrectly** (`sizing.py:93-95`)
+
+Current code:
+```python
+if contracts < min_contracts and raw_size >= Decimal("0.5"):
+    contracts = min_contracts  # BUG!
+```
+
+Per Curtis Faith: **Always truncate to 0**, never round up. This violates risk rules.
+
+**Fix required:**
+```python
+# Remove the rounding-up logic entirely
+# If raw_size < 1, contracts = 0 (skip trade)
+```
+
+**3. No Total Risk Cap mechanism**
+
+The `LimitChecker` counts units but doesn't track total open risk as % of equity. Modern approach:
+- Track: `sum(units × risk_per_unit)` across all positions
+- Cap at 20% of equity
+- This naturally scales with account size
+
+#### Action Items for Implementation
+
+- [ ] Update `rules.py`: Add `MAX_TOTAL_RISK = Decimal("0.20")`
+- [ ] Update `LimitChecker`: Add total risk checking (not just unit count)
+- [ ] Fix `sizing.py`: Remove the "bump to min" rounding logic
+- [ ] Make limits configurable for backtesting:
+  - Original mode (12 units, for comparison)
+  - Modern mode (20% risk cap)
+
+#### For Backtesting
+
+Run backtests with BOTH approaches to compare:
+1. **Original Turtle limits** (12 units max) - historical validation
+2. **Modern Parker limits** (20% risk cap) - realistic for 228 markets
 
 ---
 
