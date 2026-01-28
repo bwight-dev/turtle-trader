@@ -16,13 +16,15 @@ Build backtesting infrastructure to validate the Turtle Trading Bot against hist
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| **Data Source** | Yahoo Finance (primary) | Simple, free, no IBKR needed for backtest |
+| **Data Source** | ⚠️ Yahoo for ETFs/stocks; IBKR or ETF proxies for futures | Yahoo futures data NOT back-adjusted - corrupts N calculations |
 | **Universe Size** | 228 markets (full database) | Jerry Parker diversified approach |
 | **Short Positions** | Yes, both long and short | Original Turtle rules |
 | **Starting Equity** | **Configurable** (default $50K) | Test with $10K, $50K, $200K, etc. |
 | **Systems** | S1 + S2 (full system) | No point testing partial rules |
 | **Pyramiding** | Yes | Core Turtle rule |
 | **Position Limits** | 4/6/12 units | Full rule enforcement |
+| **Size < 1 contract** | Skip trade | Truncate to 0, don't round up (Curtis Faith) |
+| **Signal Priority** | Buy Strength, Sell Weakness | Rank by (price - breakout) / N |
 
 ---
 
@@ -581,52 +583,132 @@ python scripts/backtest.py --universe etf --start 2024-01-01 --end 2024-06-30
 | Starting equity? | **Configurable** ($10K, $50K, $200K, etc.) |
 | Which systems? | S1 + S2 (full system) |
 | Universe size? | Full 228 markets |
-| Data source? | Yahoo Finance primary, IBKR as fallback |
+| Data source? | ⚠️ Yahoo for ETFs/stocks; **back-adjusted data needed for futures** |
 | Intraday stops? | Use daily H/L to check stop triggers |
 | Benchmark? | SPY buy & hold |
+| Size < 1 contract? | **Skip trade** (truncate to 0) |
+| Signal priority? | **"Buy Strength, Sell Weakness"** - rank by (price - breakout) / N |
 
-### Still Open ❓
+### All Questions Resolved ✅
 
-1. **Futures Data Source** ✅ RESOLVED:
-   - Yahoo Finance has futures data (e.g., `GC=F` for gold, `ES=F` for S&P)
-   - IBKR data feed CAN work but requires TWS running and has rate limits
-   - **Decision:** Use Yahoo for simplicity; IBKR available as fallback if needed
-   - Need to verify: Run `yfinance.download("GC=F", period="2y")` for all 58 futures
+#### 1. Futures Data Source ⚠️ CRITICAL FINDING
 
-2. **Futures Roll Handling** ⏳ TO VERIFY:
-   - Yahoo provides continuous front-month data (auto-rolls)
-   - Question: Does this cause price jumps that affect stop calculations?
-   - **Action:** Check Yahoo data around roll dates for /ES, /GC to see if there are gaps
-   - If problematic, may need back-adjusted data from IBKR
+**Yahoo continuous data is NOT sufficient for backtesting.**
 
-3. **Intraday Stop Simulation** ✅ RESOLVED:
-   - **Problem:** With daily bars, a stop might be hit intraday but we only see OHLC
-   - **Example:** Long at $100, stop at $98. Day's range: Open $101, High $102, Low $97, Close $100
-     - Reality: Stop at $98 was hit (Low went to $97)
-     - Naive backtest using Close: Would miss this stop hit
-   - **Solution:** Check daily Low (for longs) or High (for shorts) against stop price
-   - This is more realistic and avoids overly optimistic results
+From Turtle Expert (Curtis Faith, Complete TurtleTrader):
+> "Standard free data feeds (like Yahoo) often simply stitch contract months together. This creates artificial price 'gaps' at the rollover date. Because the Turtle system relies on N (volatility) for position sizing, a non-adjusted gap will be read by your bot as a massive volatility spike, corrupting your N calculation and your position sizing for the next 20+ days."
 
-4. **Position Sizing Edge Cases** ❓ ASK EXPERT:
-   - What if calculated unit size < 1 contract?
-   - Options:
-     - a) Skip the trade (not enough equity for this market)
-     - b) Round up to 1 (violates risk rules but takes the trade)
+**Decision:** Must use **back-adjusted continuous data**
+- Option A: IBKR back-adjusted continuous series
+- Option B: ETFs for commodities/indices (GLD, SPY, USO) - naturally continuous
+- Option C: Professional data vendor (CSI Data, Norgate)
 
-   **🔮 Question for Turtle Expert:**
-   > "In the original Turtle system, what happened when calculated position size was less than 1 contract? Did the Turtles skip that market, round up to 1 contract, or handle it another way? What did Richard Dennis or the rules specify for minimum position sizes?"
+**Impact on Implementation:**
+- ETFs and stocks: Yahoo is fine ✅
+- Futures: Need back-adjusted data or use ETF proxies ⚠️
 
-5. **Benchmark Comparison** ✅ RESOLVED:
-   - Primary: Buy & hold SPY
-   - Secondary: SG Trend Index (if available)
-   - This allows comparing to both passive investing and professional trend followers
+---
 
-6. **Signal Priority When Capital Limited** ❓ ASK EXPERT:
-   - If multiple signals fire on same day but capital only allows some trades:
-   - How to prioritize?
+#### 2. Futures Roll Handling ✅ RESOLVED
 
-   **🔮 Question for Turtle Expert:**
-   > "When multiple entry signals occurred on the same day and the Turtles couldn't take all of them due to position limits or capital constraints, how did they prioritize? Did the original rules specify a method - random selection, strongest breakout, volatility-adjusted ranking, or some other approach? What did Curtis Faith or Jerry Parker describe as the standard practice?"
+**Back-adjusted data is required.**
+
+From Turtle Expert:
+> "The Turtles handled rolls by moving to the new contract 'a few weeks before expiration.' For backtesting, you need data that simulates this by 'back-adjusting' past prices. If Crude Oil jumps from $70 to $72 purely because of a contract roll, your system must adjust the historical $70 prices down to $68 to make the chart smooth."
+
+**Practical Options:**
+1. Use ETF proxies for futures (GLD instead of /GC, USO instead of /CL)
+2. Use IBKR continuous back-adjusted series
+3. Accept this limitation for initial backtest, note in results
+
+---
+
+#### 3. Intraday Stop Simulation ✅ CONFIRMED
+
+**Use daily H/L range to check stop triggers.**
+
+From Turtle Expert:
+> "The Turtles did not wait for the market to close to exit a loser. If the price hit their stop number during the day, they got out immediately."
+
+**Implementation:**
+```python
+# For LONG position with stop at $95:
+if daily_low <= stop_price:
+    exit_price = stop_price  # (or slightly worse for slippage)
+
+# For SHORT position with stop at $105:
+if daily_high >= stop_price:
+    exit_price = stop_price
+```
+
+---
+
+#### 4. Position Sizing Edge Cases ✅ RESOLVED
+
+**Skip the trade (round DOWN to zero).**
+
+From Turtle Expert (Curtis Faith):
+> "The rules specify that after calculating the Unit size, the result must be truncated (rounded down) to the nearest whole integer. If the math resulted in 0.8 or 0.5 contracts, truncating results in zero."
+>
+> "For smaller accounts or markets with huge volatility, the risk of even a single contract might exceed the percent-risk limit. In those cases, 'a prudent number of contracts to trade would be zero.'"
+
+**Implementation:**
+```python
+unit_size = int(risk_amount / (n_value * point_value))  # truncate, don't round
+if unit_size < 1:
+    log(f"Skipping {symbol}: calculated size {raw_size:.2f} < 1 contract")
+    return None  # Skip this trade
+```
+
+**Small Account Warning:** This is why $10K accounts will struggle - many markets will be untradeable due to granularity, destroying diversification.
+
+---
+
+#### 5. Benchmark Comparison ✅ RESOLVED
+
+- Primary: Buy & hold SPY
+- Secondary: SG Trend Index (if available)
+
+---
+
+#### 6. Signal Priority When Capital Limited ✅ RESOLVED
+
+**"Buy Strength, Sell Weakness"**
+
+From Turtle Expert:
+> "If multiple markets generated entry signals at the same time, the Turtles were instructed to buy the strongest markets and sell short the weakest markets within that group."
+
+**How to Measure Strength (3 methods, Turtles had discretion):**
+
+1. **Visual**: Look at charts (not practical for bot)
+2. **N Advance** (recommended for bot):
+   ```python
+   strength = (current_price - breakout_price) / N
+   ```
+3. **Rate of Change**:
+   ```python
+   strength = (current_price - price_3_months_ago) / N
+   ```
+
+**Implementation:**
+```python
+# When multiple signals, sort by strength
+signals_with_strength = [
+    (signal, (signal.current_price - signal.breakout_price) / signal.n_value)
+    for signal in signals
+]
+
+# For LONGS: take highest strength first
+# For SHORTS: take lowest strength first (most negative)
+long_signals = sorted([s for s in signals_with_strength if s[0].direction == "LONG"],
+                      key=lambda x: x[1], reverse=True)
+short_signals = sorted([s for s in signals_with_strength if s[0].direction == "SHORT"],
+                       key=lambda x: x[1])
+
+# Enter ONE unit at a time, strongest/weakest first
+```
+
+**Additional Rule:** Only enter one Unit in a single market at a time when multiple signals fire.
 
 ---
 
