@@ -145,15 +145,26 @@
 
 - **GIVEN** an expiring futures contract
 - **WHEN** the contract is "a few weeks" from expiration **OR** volume shifts to the new month
+- **AND** the new contract's price would have resulted in an existing position (i.e., price > breakout level for longs, price < breakout level for shorts)
 - **THEN** roll the position: Exit the old contract and enter the new contract simultaneously
-- **REASON:** Do not exit a trend just because a contract expires
+- **CONSTRAINT:** Do NOT roll if the new contract hasn't hit the breakout point - near month may trend on immediate supply/demand while distant months do not
+- **REASON:** Do not exit a trend just because a contract expires, but also don't enter a contract that doesn't confirm the trend
 
-### Rule 16: Fast Market Logic
+### Rule 16a: Opening Gap Logic
 
-- **GIVEN** the market "gaps" past your stop or entry price overnight
+- **GIVEN** a market gaps open through your breakout price or stop price overnight
 - **WHEN** the market opens
-- **THEN** do not panic. Execute the order at the market price, even if it is worse than your stop price
-- **REASON:** "If you don't bet, you can't win." You must take the trade/loss even if the price is bad
+- **THEN** execute the order at market price immediately on the open
+- **REASON:** "If you don't bet, you can't win." You must take the entry/exit even if the price is worse than your target
+
+### Rule 16b: Intraday Fast Market Logic
+
+- **GIVEN** the market enters a "fast market" condition intraday (liquidity dries up, bid/ask spreads widen dramatically)
+- **WHEN** price moves rapidly past your entry or stop level
+- **THEN** do NOT place a market order into the panic
+- **AND** WAIT for the market to trade and stabilize (look for at least a temporary price reversal)
+- **THEN** execute your order after stability returns
+- **REASON:** Market orders in a fast market guarantee the worst possible fill. Sellers vanish and you buy at the high of the panic. Patience preserves capital
 
 ### Rule 17: Portfolio Heat Cap (Modern Rule)
 
