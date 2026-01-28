@@ -8,7 +8,21 @@
 
 ## Executive Summary
 
-Build backtesting infrastructure to validate the Turtle Trading Bot against historical data before live deployment. Goal: run simulations on 2024-2025 market data and validate against known Turtle Trading performance characteristics.
+Build backtesting infrastructure to validate the Turtle Trading Bot against historical data before live deployment. Goal: run simulations on 2024-2025 market data across a **228-market universe** (Jerry Parker diversified approach) and validate against known Turtle Trading performance characteristics.
+
+---
+
+## Confirmed Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| **Data Source** | Yahoo Finance | Simple, free, no IBKR needed for backtest |
+| **Universe Size** | 228 markets (full database) | Jerry Parker diversified approach |
+| **Short Positions** | Yes, both long and short | Original Turtle rules |
+| **Starting Equity** | $50,000 | Realistic micro account |
+| **Systems** | S1 + S2 (full system) | No point testing partial rules |
+| **Pyramiding** | Yes | Core Turtle rule |
+| **Position Limits** | 4/6/12 units | Full rule enforcement |
 
 ---
 
@@ -218,61 +232,66 @@ From [QuantifiedStrategies](https://www.quantifiedstrategies.com/turtle-trading-
 
 ---
 
-### Decision 3: Universe of Instruments
+### Decision 3: Universe of Instruments ✅ DECIDED
 
-What symbols to include in 2024-2025 backtest?
+**Full 228-Market Universe** (from `004_seed_full_universe.sql`):
 
-**Core Micro Futures (Our Target):**
-- MGC (Micro Gold)
-- MNQ (Micro Nasdaq)
-- MES (Micro S&P)
-- MCL (Micro Crude)
-- SIL (Micro Silver)
+| Asset Class | Count | Examples |
+|-------------|-------|----------|
+| **Full-Size Futures** | 58 | /ES, /GC, /CL, /ZC, /6E |
+| **Micro Futures** | 24 | /MES, /MGC, /MCL, /M6E |
+| **ETFs** | 41 | SPY, GLD, TLT, XLE |
+| **Stocks** | 105 | AAPL, NVDA, XOM, JPM |
+| **Total** | **228** | |
 
-**Extended Universe (Optional):**
-- M2K (Micro Russell)
-- MYM (Micro Dow)
-- 6E, 6J (Currency futures via ETF proxies?)
+**Correlation Groups** (for 6-unit limit):
+- `equity_us`, `equity_us_tech`, `equity_us_small`
+- `metals_precious`, `metals_industrial`
+- `energy_oil`, `energy_gas`, `energy_refined`
+- `grains_feed`, `grains_oilseed`, `grains_wheat`
+- `currency_eur`, `currency_jpy`, `currency_gbp`, etc.
+- `rates_long`, `rates_mid`, `rates_short`
+- `softs`, `livestock`, `dairy`, `crypto`
 
-**Data Availability Check Needed:**
-- [ ] Verify Yahoo has data for micro futures
-- [ ] If not, use full-size contract data (ES, NQ, GC, CL, SI)
-- [ ] Or use ETF proxies (GLD, QQQ, SPY, USO, SLV)
-
----
-
-### Decision 4: Initial Equity & Position Sizing
-
-**Realistic Micro Account:**
-- Starting equity: $25,000 - $100,000
-- Risk per unit: 0.5% of notional equity
-- Allows testing of drawdown rule
-
-**Scaled Test:**
-- Starting equity: $1,000,000 (original Turtle scale)
-- More positions possible
-- Better statistical significance
-
-**Recommendation:** Test both - $50K micro account AND $1M scaled
+**Data Considerations for 228 Markets:**
+- Yahoo Finance has good coverage for ETFs and stocks
+- Futures use full-size contract symbols (ES=F, GC=F, CL=F)
+- Micro futures → fall back to full-size Yahoo data (same price, different sizing)
+- ~500 trading days (2024-2025) × 228 symbols = ~114,000 bar fetches
+- Need caching strategy for performance
 
 ---
 
-### Decision 5: What to Validate First
+### Decision 4: Initial Equity & Position Sizing ✅ DECIDED
 
-**Phase 1: Core Rules Only**
-- S1 system entries/exits
-- 2N stops
-- No pyramiding
-- No correlation limits
-- Single instrument
+**$50,000 Starting Equity** (realistic micro account)
 
-**Phase 2: Full Rules**
-- S1 + S2 systems
-- Pyramiding with stop adjustment
+Position sizing implications:
+- Risk per unit: 0.5% × $50,000 = $250 per unit
+- Unit size = $250 / (N × Point Value)
+- Example: If N = $2 for /MES (point value = $5):
+  - Unit = $250 / ($2 × $5) = 25 contracts
+- Micro futures allow proper diversification at this equity level
+
+**Drawdown Rule Testing:**
+- 10% DD ($5,000 loss) → Notional equity drops to $40,000
+- This will naturally test the Rule 5 implementation
+
+---
+
+### Decision 5: What to Validate ✅ DECIDED
+
+**Full System from Day 1** - no phased approach
+
+Test everything together:
+- S1 + S2 systems (both entries)
+- Long AND short positions
+- Pyramiding with stop adjustment (Rules 11-12)
 - 4/6/12 unit limits
-- Multi-instrument portfolio
+- 228-market portfolio
+- Drawdown rule (Rule 5)
 
-**Recommendation:** Phase 1 first (simpler validation)
+Rationale: Testing partial rules doesn't validate the real system behavior. Interactions between rules matter.
 
 ---
 
@@ -400,114 +419,203 @@ class TradeRecord:
 
 ## Part 5: Implementation Phases
 
-### Phase 1: Minimal Viable Backtest (MVP)
-**Goal:** Single instrument, S1 only, no pyramiding
+### Phase 1: Data Infrastructure
+**Goal:** Reliable historical data for 228 markets
+
+**Tasks:**
+- [ ] Extend `SymbolMapper` to handle all 228 symbols → Yahoo format
+- [ ] Implement `HistoricalDataLoader` with caching (avoid re-fetching)
+- [ ] Handle futures symbol mapping (micro → full-size for Yahoo)
+- [ ] Validate data quality (no gaps, correct OHLC)
+- [ ] Build data cache (~114K bars for 2024-2025)
+
+**Considerations:**
+- Yahoo rate limits: may need throttling or batch fetching
+- Cache format: SQLite or Parquet for fast reads
+- Handle stock splits, dividends in ETF/stock data
+
+**Estimated Effort:** 2-3 days
+
+---
+
+### Phase 2: Backtesting Engine Core
+**Goal:** Day-by-day simulation with full Turtle rules
 
 **Tasks:**
 - [ ] Create `BacktestConfig` and `BacktestResult` models
-- [ ] Implement `HistoricalDataLoader` (Yahoo fetch)
-- [ ] Implement `DaySimulator` (basic day loop)
-- [ ] Implement `BacktestEngine` (coordinate components)
-- [ ] Create `scripts/backtest.py` CLI
-- [ ] Test with single symbol (e.g., GLD ETF for gold)
+- [ ] Implement `BacktestEngine` main loop
+- [ ] Implement `DaySimulator`:
+  - Calculate N values for all 228 markets
+  - Calculate Donchian channels (10/20/55)
+  - Detect S1/S2 signals (both long and short)
+  - Apply S1 filter (Rule 7)
+  - Check position limits (4/6/12)
+  - Execute entries via PaperBroker
+- [ ] Implement position monitoring:
+  - Check stops (2N)
+  - Check breakout exits (10/20-day)
+  - Check pyramid opportunities (+½N)
+  - Move stops on pyramid (Rule 12)
+- [ ] Track equity curve and drawdown
+- [ ] Implement drawdown rule (Rule 5: 10% → 20% reduction)
 
-**Validation:**
-- Can run end-to-end on 2024 data
-- Produces trade list and basic metrics
-- Results are reproducible
+**Key Integration Points:**
+```
+Existing services to use:
+├── SignalDetector.detect_s1_signal()
+├── SignalDetector.detect_s2_signal()
+├── PositionMonitor.check_position()
+├── LimitChecker.can_add_position()
+├── S1Filter.should_take_trade()
+├── UnitCalculator.calculate_unit_size()
+├── PaperBroker.place_bracket_order()
+└── PaperBroker.modify_stop()
+```
 
-**Estimated Effort:** 3-4 days
-
----
-
-### Phase 2: Full Turtle Rules
-**Goal:** All rules, single instrument
-
-**Tasks:**
-- [ ] Add S2 system support
-- [ ] Implement pyramiding logic in simulation
-- [ ] Add S1 filter (Rule 7 - skip if last winner)
-- [ ] Track pyramid levels per position
-- [ ] Adjust stops on pyramid (Rule 12)
-
-**Validation:**
-- S1 filter reduces trade count
-- Pyramids trigger at +½N levels
-- All stops move to 2N below newest entry
-
-**Estimated Effort:** 2-3 days
-
----
-
-### Phase 3: Multi-Instrument Portfolio
-**Goal:** Full portfolio with position limits
-
-**Tasks:**
-- [ ] Multi-symbol simulation loop
-- [ ] Integrate LimitChecker (4/6/12 limits)
-- [ ] Add correlation groups
-- [ ] Portfolio-level equity tracking
-- [ ] Capital allocation across instruments
-
-**Validation:**
-- Position limits enforced correctly
-- Capital allocated appropriately
-- No over-concentration
-
-**Estimated Effort:** 2-3 days
+**Estimated Effort:** 4-5 days
 
 ---
 
-### Phase 4: Analytics & Reporting
-**Goal:** Professional-grade output
+### Phase 3: Results & Analytics
+**Goal:** Professional-grade output and analysis
 
 **Tasks:**
-- [ ] Calculate all performance metrics
-- [ ] Generate equity curve chart
+- [ ] Implement `TradeRecord` model with full trade details
+- [ ] Calculate performance metrics:
+  - Total return, annualized return
+  - Max drawdown, average drawdown
+  - Sharpe ratio, Sortino ratio
+  - Win rate, profit factor
+  - Average winner/loser, largest winner/loser
+  - Expectancy
+- [ ] Generate equity curve data
 - [ ] Monthly/yearly breakdown tables
-- [ ] Drawdown analysis
 - [ ] Trade log export (CSV)
-- [ ] Compare to benchmark (buy & hold)
+- [ ] Breakdown by:
+  - Asset class (futures vs ETF vs stocks)
+  - System (S1 vs S2)
+  - Direction (long vs short)
+  - Correlation group
 
-**Validation:**
-- Metrics match manual calculation
-- Charts are readable
-- Export works for external analysis
-
-**Estimated Effort:** 2 days
+**Estimated Effort:** 2-3 days
 
 ---
 
-### Phase 5: Walk-Forward Validation
-**Goal:** Robust out-of-sample testing
+### Phase 4: CLI & Automation
+**Goal:** Easy-to-run backtest command
 
 **Tasks:**
-- [ ] Split data: 2024 in-sample, 2025 out-of-sample
-- [ ] Implement walk-forward framework
-- [ ] Compare IS vs OOS performance
-- [ ] Parameter sensitivity analysis
+- [ ] Create `scripts/backtest.py` with argparse
+- [ ] Support command-line options:
+  ```
+  --start DATE        Start date (default: 2024-01-01)
+  --end DATE          End date (default: 2025-12-31)
+  --equity AMOUNT     Starting equity (default: 50000)
+  --universe TYPE     all|futures|etf|stock (default: all)
+  --output FILE       Results output file
+  --verbose           Show progress
+  ```
+- [ ] Progress bar for long backtests
+- [ ] Save results to JSON/CSV
+- [ ] Generate summary report
 
-**Validation:**
-- OOS performance within acceptable range of IS
-- No signs of overfitting
+**Example Usage:**
+```bash
+# Full 2024-2025 backtest
+python scripts/backtest.py --start 2024-01-01 --end 2025-12-31 --equity 50000
+
+# Futures only
+python scripts/backtest.py --universe futures --output results/futures_2024.json
+
+# Quick test on ETFs
+python scripts/backtest.py --universe etf --start 2024-01-01 --end 2024-06-30
+```
+
+**Estimated Effort:** 1-2 days
+
+---
+
+### Phase 5: Validation & Analysis
+**Goal:** Verify results make sense
+
+**Tasks:**
+- [ ] Spot-check individual trades manually
+- [ ] Compare metrics to historical Turtle benchmarks
+- [ ] Run 2024 in-sample, 2025 out-of-sample comparison
+- [ ] Analyze by market regime (trending vs. choppy periods)
+- [ ] Identify best/worst performing asset classes
+- [ ] Document any anomalies or unexpected results
+
+**Expected Results (based on historical Turtle performance):**
+- Win rate: 35-45%
+- Max drawdown: 20-35%
+- Profit factor: > 1.2
+- Most profits from few big winners
 
 **Estimated Effort:** 2-3 days
+
+---
+
+### Total Estimated Effort: 11-16 days
 
 ---
 
 ## Part 6: Open Questions
 
-1. **Data for Micro Futures**: Does Yahoo have /MGC, /MNQ, etc.? Or do we need to use ETF proxies (GLD, QQQ)?
+### Resolved ✅
 
-2. **Futures Roll Handling**: How do we handle contract expiration in backtest? Use continuous contracts? Back-adjusted data?
+| Question | Resolution |
+|----------|------------|
+| Short positions? | Yes, include both long and short |
+| Starting equity? | $50,000 |
+| Which systems? | S1 + S2 (full system) |
+| Universe size? | Full 228 markets |
 
-3. **Intraday Stops**: With daily bars, how do we simulate intraday stop hits? Use daily high/low?
+### Still Open ❓
 
-4. **Position Sizing Edge Cases**: What if unit size < 1 contract? Skip trade or round up?
+1. **Futures Data on Yahoo**:
+   - Does Yahoo have good data for all 58 futures symbols?
+   - Fall back to ETF proxies if needed? (GLD for /GC, USO for /CL)
+   - Need to test: `yfinance.download("GC=F", period="2y")`
 
-5. **Short Positions**: Original Turtles traded both sides. Do we include shorts in backtest?
+2. **Futures Roll Handling**:
+   - Yahoo provides continuous front-month data
+   - Is this good enough, or do we need back-adjusted data?
+   - Affects: stop calculations across contract rolls
 
-6. **Benchmark Comparison**: What benchmark to compare against? Buy & hold index? Other trend-following systems?
+3. **Intraday Stop Simulation**:
+   - With daily bars only, how do we know if a stop was hit intraday?
+   - Options:
+     - a) Use daily low (for longs) to check if stop hit
+     - b) Assume stops hit at close if price moved past stop
+     - c) Ignore intraday - use close price only
+   - Recommendation: Option (a) - check daily H/L range
+
+4. **Position Sizing Edge Cases**:
+   - What if calculated unit size < 1 contract?
+   - Options:
+     - a) Skip the trade (not enough equity for this market)
+     - b) Round up to 1 (violates risk rules)
+   - Recommendation: Option (a) - skip and log
+
+5. **Benchmark Comparison**:
+   - Compare against what?
+   - Options:
+     - a) Buy & hold SPY
+     - b) 60/40 portfolio
+     - c) SG Trend Index (professional trend followers)
+     - d) All of the above
+   - Recommendation: SPY buy & hold as primary benchmark
+
+6. **Signal Priority When Capital Limited**:
+   - If multiple signals fire on same day but can't take all:
+   - How to prioritize?
+   - Options:
+     - a) Strongest breakout (furthest past channel)
+     - b) Highest volatility-adjusted opportunity
+     - c) Random (like original Turtles)
+     - d) First by symbol alphabetically (reproducible)
+   - Need to decide
 
 ---
 
