@@ -22,7 +22,7 @@ Build backtesting infrastructure to validate the Turtle Trading Bot against hist
 | **Starting Equity** | **Configurable** (default $50K) | Test with $10K, $50K, $200K, etc. |
 | **Systems** | S1 + S2 (full system) | No point testing partial rules |
 | **Pyramiding** | Yes | Core Turtle rule |
-| **Position Limits** | ⚠️ **Needs Update** - see Part 6.5 | Original 4/6/12 too restrictive for 228 markets |
+| **Position Limits** | ✅ **Fixed** - 20% risk cap mode | Modern mode for 228+ markets, original 12-unit mode optional |
 | **Size < 1 contract** | Skip trade | Truncate to 0, don't round up (Curtis Faith) |
 | **Signal Priority** | Buy Strength, Sell Weakness | Rank by (price - breakout) / N |
 
@@ -712,68 +712,60 @@ short_signals = sorted([s for s in signals_with_strength if s[0].direction == "S
 
 ---
 
-## Part 6.5: Code Review Findings ⚠️
+## Part 6.5: Code Review Findings ✅ FIXED
 
-### Critical Finding: Position Limits Need Update for 228 Markets
+### Critical Finding: Position Limits Updated for 228 Markets
 
-Based on Jerry Parker interviews, the original Turtle rules (designed for ~20 markets) need adjustment for 228+ markets.
+Based on Jerry Parker interviews, the original Turtle rules (designed for ~20 markets) needed adjustment for 228+ markets. **These issues have been fixed.**
 
-#### Current Code Issues
+#### Issues Identified and Fixed
 
-**1. MAX_UNITS_TOTAL = 12 is too restrictive** (`rules.py:77`)
+**1. ✅ MAX_UNITS_TOTAL = 12 was too restrictive** (`rules.py`)
 
 | Approach | Max Units | Risk per Unit | Total Risk |
 |----------|-----------|---------------|------------|
 | Original Turtles (20 markets) | 12 | 1-2% | 12-24% |
-| Current Code (228 markets) | 12 | 0.5% | **6%** ❌ |
-| Parker Modern (300+ markets) | ~40 | 0.5% | **20%** ✅ |
+| ~~Current Code (228 markets)~~ | ~~12~~ | ~~0.5%~~ | ~~**6%**~~ |
+| **Fixed: Modern mode (228+ markets)** | **~40** | **0.5%** | **20%** ✅ |
 
-With 228 markets and only 12 total units allowed, the bot can only hold positions in 5% of the universe!
+**Fix applied:** Added `MAX_TOTAL_RISK = Decimal("0.20")` and `USE_RISK_CAP_MODE = True` to `rules.py`.
 
-**Recommendation:** Change from unit count limit to **Total Risk Cap**:
+**2. ✅ Sizing code no longer rounds up** (`sizing.py`)
+
+~~Old code that violated risk rules:~~
 ```python
-# Instead of: MAX_UNITS_TOTAL = 12
-# Use: MAX_TOTAL_RISK = Decimal("0.20")  # 20% of equity
-# This allows: 20% / 0.5% = 40 units
+# REMOVED - was incorrectly rounding up
+# if contracts < min_contracts and raw_size >= Decimal("0.5"):
+#     contracts = min_contracts
 ```
 
-**2. Sizing code rounds up incorrectly** (`sizing.py:93-95`)
+Per Curtis Faith: **Always truncate to 0**, never round up. Fixed.
 
-Current code:
-```python
-if contracts < min_contracts and raw_size >= Decimal("0.5"):
-    contracts = min_contracts  # BUG!
-```
+**3. ✅ Total Risk Cap mechanism added**
 
-Per Curtis Faith: **Always truncate to 0**, never round up. This violates risk rules.
+The `LimitChecker` now supports two modes:
+- **Original mode** (`use_risk_cap_mode=False`): 12 unit limit for historical validation
+- **Modern mode** (`use_risk_cap_mode=True`, default): 20% total risk cap
+  - Tracks: `sum(units × 0.5%)` across all positions
+  - Cap at 20% of equity (~40 units)
+  - Naturally scales with account size
 
-**Fix required:**
-```python
-# Remove the rounding-up logic entirely
-# If raw_size < 1, contracts = 0 (skip trade)
-```
+#### Completed Implementation
 
-**3. No Total Risk Cap mechanism**
-
-The `LimitChecker` counts units but doesn't track total open risk as % of equity. Modern approach:
-- Track: `sum(units × risk_per_unit)` across all positions
-- Cap at 20% of equity
-- This naturally scales with account size
-
-#### Action Items for Implementation
-
-- [ ] Update `rules.py`: Add `MAX_TOTAL_RISK = Decimal("0.20")`
-- [ ] Update `LimitChecker`: Add total risk checking (not just unit count)
-- [ ] Fix `sizing.py`: Remove the "bump to min" rounding logic
-- [ ] Make limits configurable for backtesting:
+- [x] Updated `rules.py`: Added `MAX_TOTAL_RISK = Decimal("0.20")` and `USE_RISK_CAP_MODE = True`
+- [x] Updated `LimitChecker`: Added `RISK_CAP` violation type and total risk checking
+- [x] Fixed `sizing.py`: Removed the "bump to min" rounding logic
+- [x] Made limits configurable for backtesting:
   - Original mode (12 units, for comparison)
-  - Modern mode (20% risk cap)
+  - Modern mode (20% risk cap, default)
+- [x] Updated `Portfolio.add_position()`: Supports `use_risk_cap_mode` parameter
+- [x] All 360 unit tests pass
 
 #### For Backtesting
 
 Run backtests with BOTH approaches to compare:
-1. **Original Turtle limits** (12 units max) - historical validation
-2. **Modern Parker limits** (20% risk cap) - realistic for 228 markets
+1. **Original Turtle limits** (`use_risk_cap_mode=False`, 12 units max) - historical validation
+2. **Modern Parker limits** (`use_risk_cap_mode=True`, 20% risk cap) - realistic for 228 markets
 
 ---
 
