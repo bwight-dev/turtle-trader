@@ -16,10 +16,10 @@ Build backtesting infrastructure to validate the Turtle Trading Bot against hist
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| **Data Source** | Yahoo Finance | Simple, free, no IBKR needed for backtest |
+| **Data Source** | Yahoo Finance (primary) | Simple, free, no IBKR needed for backtest |
 | **Universe Size** | 228 markets (full database) | Jerry Parker diversified approach |
 | **Short Positions** | Yes, both long and short | Original Turtle rules |
-| **Starting Equity** | $50,000 | Realistic micro account |
+| **Starting Equity** | **Configurable** (default $50K) | Test with $10K, $50K, $200K, etc. |
 | **Systems** | S1 + S2 (full system) | No point testing partial rules |
 | **Pyramiding** | Yes | Core Turtle rule |
 | **Position Limits** | 4/6/12 units | Full rule enforcement |
@@ -264,18 +264,29 @@ From [QuantifiedStrategies](https://www.quantifiedstrategies.com/turtle-trading-
 
 ### Decision 4: Initial Equity & Position Sizing ✅ DECIDED
 
-**$50,000 Starting Equity** (realistic micro account)
+**Configurable Starting Equity** - run multiple backtests with different sizes:
 
-Position sizing implications:
-- Risk per unit: 0.5% × $50,000 = $250 per unit
-- Unit size = $250 / (N × Point Value)
-- Example: If N = $2 for /MES (point value = $5):
-  - Unit = $250 / ($2 × $5) = 25 contracts
-- Micro futures allow proper diversification at this equity level
+| Account Size | Risk per Unit (0.5%) | Use Case |
+|--------------|----------------------|----------|
+| $10,000 | $50 | Minimum viable micro account |
+| $50,000 | $250 | **Default** - realistic micro trader |
+| $100,000 | $500 | Larger retail account |
+| $200,000 | $1,000 | Semi-professional |
+| $1,000,000 | $5,000 | Original Turtle scale |
+
+**Position sizing formula:**
+- Unit size = Risk per Unit / (N × Point Value)
+- Example at $50K: $250 / ($2 × $5) = 25 contracts of /MES
+
+**Why test multiple sizes:**
+- $10K may have too few tradeable markets (size < 1 contract issues)
+- $50K is realistic for most users
+- $200K+ shows scaling behavior
+- Compare results across equity levels
 
 **Drawdown Rule Testing:**
-- 10% DD ($5,000 loss) → Notional equity drops to $40,000
-- This will naturally test the Rule 5 implementation
+- 10% DD → Notional equity drops by 20%
+- Example at $50K: $5K loss → notional becomes $40K
 
 ---
 
@@ -567,55 +578,55 @@ python scripts/backtest.py --universe etf --start 2024-01-01 --end 2024-06-30
 | Question | Resolution |
 |----------|------------|
 | Short positions? | Yes, include both long and short |
-| Starting equity? | $50,000 |
+| Starting equity? | **Configurable** ($10K, $50K, $200K, etc.) |
 | Which systems? | S1 + S2 (full system) |
 | Universe size? | Full 228 markets |
+| Data source? | Yahoo Finance primary, IBKR as fallback |
+| Intraday stops? | Use daily H/L to check stop triggers |
+| Benchmark? | SPY buy & hold |
 
 ### Still Open ❓
 
-1. **Futures Data on Yahoo**:
-   - Does Yahoo have good data for all 58 futures symbols?
-   - Fall back to ETF proxies if needed? (GLD for /GC, USO for /CL)
-   - Need to test: `yfinance.download("GC=F", period="2y")`
+1. **Futures Data Source** ✅ RESOLVED:
+   - Yahoo Finance has futures data (e.g., `GC=F` for gold, `ES=F` for S&P)
+   - IBKR data feed CAN work but requires TWS running and has rate limits
+   - **Decision:** Use Yahoo for simplicity; IBKR available as fallback if needed
+   - Need to verify: Run `yfinance.download("GC=F", period="2y")` for all 58 futures
 
-2. **Futures Roll Handling**:
-   - Yahoo provides continuous front-month data
-   - Is this good enough, or do we need back-adjusted data?
-   - Affects: stop calculations across contract rolls
+2. **Futures Roll Handling** ⏳ TO VERIFY:
+   - Yahoo provides continuous front-month data (auto-rolls)
+   - Question: Does this cause price jumps that affect stop calculations?
+   - **Action:** Check Yahoo data around roll dates for /ES, /GC to see if there are gaps
+   - If problematic, may need back-adjusted data from IBKR
 
-3. **Intraday Stop Simulation**:
-   - With daily bars only, how do we know if a stop was hit intraday?
-   - Options:
-     - a) Use daily low (for longs) to check if stop hit
-     - b) Assume stops hit at close if price moved past stop
-     - c) Ignore intraday - use close price only
-   - Recommendation: Option (a) - check daily H/L range
+3. **Intraday Stop Simulation** ✅ RESOLVED:
+   - **Problem:** With daily bars, a stop might be hit intraday but we only see OHLC
+   - **Example:** Long at $100, stop at $98. Day's range: Open $101, High $102, Low $97, Close $100
+     - Reality: Stop at $98 was hit (Low went to $97)
+     - Naive backtest using Close: Would miss this stop hit
+   - **Solution:** Check daily Low (for longs) or High (for shorts) against stop price
+   - This is more realistic and avoids overly optimistic results
 
-4. **Position Sizing Edge Cases**:
+4. **Position Sizing Edge Cases** ❓ ASK EXPERT:
    - What if calculated unit size < 1 contract?
    - Options:
      - a) Skip the trade (not enough equity for this market)
-     - b) Round up to 1 (violates risk rules)
-   - Recommendation: Option (a) - skip and log
+     - b) Round up to 1 (violates risk rules but takes the trade)
 
-5. **Benchmark Comparison**:
-   - Compare against what?
-   - Options:
-     - a) Buy & hold SPY
-     - b) 60/40 portfolio
-     - c) SG Trend Index (professional trend followers)
-     - d) All of the above
-   - Recommendation: SPY buy & hold as primary benchmark
+   **🔮 Question for Turtle Expert:**
+   > "In the original Turtle system, what happened when calculated position size was less than 1 contract? Did the Turtles skip that market, round up to 1 contract, or handle it another way? What did Richard Dennis or the rules specify for minimum position sizes?"
 
-6. **Signal Priority When Capital Limited**:
-   - If multiple signals fire on same day but can't take all:
+5. **Benchmark Comparison** ✅ RESOLVED:
+   - Primary: Buy & hold SPY
+   - Secondary: SG Trend Index (if available)
+   - This allows comparing to both passive investing and professional trend followers
+
+6. **Signal Priority When Capital Limited** ❓ ASK EXPERT:
+   - If multiple signals fire on same day but capital only allows some trades:
    - How to prioritize?
-   - Options:
-     - a) Strongest breakout (furthest past channel)
-     - b) Highest volatility-adjusted opportunity
-     - c) Random (like original Turtles)
-     - d) First by symbol alphabetically (reproducible)
-   - Need to decide
+
+   **🔮 Question for Turtle Expert:**
+   > "When multiple entry signals occurred on the same day and the Turtles couldn't take all of them due to position limits or capital constraints, how did they prioritize? Did the original rules specify a method - random selection, strongest breakout, volatility-adjusted ranking, or some other approach? What did Curtis Faith or Jerry Parker describe as the standard practice?"
 
 ---
 
