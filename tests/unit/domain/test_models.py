@@ -214,7 +214,7 @@ class TestPortfolio:
         assert allowed is True
 
     def test_total_units_limit(self):
-        """Test that 12 total units limit is enforced."""
+        """Test that 12 total units limit is enforced (original mode)."""
         portfolio = Portfolio()
 
         # Create positions totaling 11 units across different groups
@@ -245,23 +245,26 @@ class TestPortfolio:
                 initial_entry_price=Decimal("100"),
                 initial_n=n,
             )
-            portfolio = portfolio.add_position(pos)
+            # Use original mode to test 12 unit limit
+            portfolio = portfolio.add_position(pos, use_risk_cap_mode=False)
 
         assert portfolio.total_units == 11
 
-        # Can add 1 more
+        # Can add 1 more (original mode)
         allowed, _ = portfolio.can_add_units(
             symbol="/MES",
             units_to_add=1,
             correlation_group=CorrelationGroup.EQUITY_US,
+            use_risk_cap_mode=False,
         )
         assert allowed is True
 
-        # Cannot add 2 more
+        # Cannot add 2 more (original mode)
         allowed, reason = portfolio.can_add_units(
             symbol="/MES",
             units_to_add=2,
             correlation_group=CorrelationGroup.EQUITY_US,
+            use_risk_cap_mode=False,
         )
         assert allowed is False
         assert "12" in reason

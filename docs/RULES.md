@@ -176,10 +176,10 @@
 | Parameter | Original (1983) | Modern (Parker) | **Our Config** |
 |-----------|-----------------|-----------------|----------------|
 | Risk per trade | 1% | 0.5% | **0.5%** |
-| Markets | ~20 | 300+ | 300+ (goal) |
+| Markets | ~20 | 300+ | **228** |
 | Max units/market | 4 | 2-4 | **4** |
 | Max correlated | 6 | varies | **6** |
-| Max total | 12 | varies | **12** |
+| Max total | 12 units | 20% risk cap | **20% risk cap** (configurable) |
 | Pyramid interval | ½N | ½N | **½N** |
 | Drawdown trigger | 10% | 10% | **10%** |
 | Equity reduction | 20% | 20% | **20%** |
@@ -188,8 +188,16 @@
 
 ## Implementation Decisions
 
-Based on 2026-01-27 planning session:
+Based on 2026-01-27 and 2026-01-28 planning sessions:
 
 1. **Risk Factor:** 0.5% (Parker modern) - accommodates large universe
 2. **Pyramid Interval:** ½N (original) - more aggressive pyramiding
-3. **Portfolio Limits:** Unit counts (original) - 4/6/12 rule, not volatility cap
+3. **Portfolio Limits:** **CONFIGURABLE** - supports both modes:
+   - **Modern Mode (default):** 20% total risk cap (Rule 17 - Portfolio Heat Cap)
+     - With 0.5% risk per unit, allows ~40 positions
+     - Per Jerry Parker: Each position must be "inconsequential"
+   - **Original Mode:** 4/6/12 unit count limits
+     - For historical validation with ~20 markets
+4. **Position Sizing:** Always truncate to 0 if calculated size < 1 contract
+   - Per Curtis Faith: Never round up, as this violates risk rules
+   - Small accounts ($10K) will be unable to trade some markets - intentional

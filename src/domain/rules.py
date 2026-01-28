@@ -62,19 +62,45 @@ S2_EXIT_PERIOD: Final[int] = 20
 # Add 1 unit at +½N intervals from last entry
 PYRAMID_INTERVAL_MULTIPLIER: Final[Decimal] = Decimal("0.5")
 
-# Maximum units per market
-MAX_UNITS_PER_MARKET: Final[int] = 4
-
 
 # =============================================================================
 # POSITION LIMITS
 # =============================================================================
+#
+# IMPORTANT: There are TWO approaches to position limits:
+#
+# 1. ORIGINAL TURTLE (1983): Hard unit count limits (4/6/12)
+#    - Designed for ~20 markets
+#    - With 1-2% risk per unit, 12 units = 12-24% total risk
+#
+# 2. MODERN PARKER (2020s): Total risk cap (Rule 17 - Portfolio Heat Cap)
+#    - Designed for 300+ markets
+#    - With 0.5% risk per unit, 20% cap = 40 units max
+#    - Per Jerry Parker: "Each position must be inconsequential"
+#
+# We support BOTH modes. For 228+ markets, use MAX_TOTAL_RISK (modern).
+# For historical validation with ~20 markets, use unit count limits (original).
+#
+# See: docs/RULES.md Rule 17 for full explanation
 
-# Maximum units in correlated markets
+# Maximum units per individual market (applies to both modes)
+MAX_UNITS_PER_MARKET: Final[int] = 4
+
+# Maximum units in correlated markets (applies to both modes)
 MAX_UNITS_CORRELATED: Final[int] = 6
 
-# Maximum total portfolio units
+# --- ORIGINAL MODE: Hard unit count limits ---
+# Maximum total portfolio units (original Turtle rule for ~20 markets)
 MAX_UNITS_TOTAL: Final[int] = 12
+
+# --- MODERN MODE: Total risk cap ---
+# Maximum total portfolio risk as % of equity (modern Parker rule for 300+ markets)
+# With 0.5% risk per unit, this allows ~40 units (0.20 / 0.005 = 40)
+MAX_TOTAL_RISK: Final[Decimal] = Decimal("0.20")  # 20% of equity
+
+# Which mode to use by default
+# Set to True for 228+ market universe, False for original 20-market validation
+USE_RISK_CAP_MODE: Final[bool] = True
 
 
 # =============================================================================

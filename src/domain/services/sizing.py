@@ -87,12 +87,20 @@ def calculate_unit_size(
 
     # Round DOWN (conservative) to whole contracts
     # Never risk more than intended
+    #
+    # IMPORTANT: Per Curtis Faith (Way of the Turtle), always TRUNCATE to zero
+    # if the calculated size is less than 1 contract. Never round up.
+    # "If the math resulted in 0.8 or 0.5 contracts, truncating results in zero."
+    # Rounding up would violate the risk rules by risking more than the
+    # percent-risk limit allows (e.g., risking 3% instead of 0.5%).
+    #
+    # This means small accounts will be unable to trade some markets -
+    # that's intentional. It preserves the risk discipline.
     contracts = int(raw_size.quantize(Decimal("1"), rounding=ROUND_DOWN))
 
-    # Apply minimum
-    if contracts < min_contracts and raw_size >= Decimal("0.5"):
-        # Only bump to min if we're at least halfway there
-        contracts = min_contracts
+    # NOTE: We intentionally do NOT bump to min_contracts if raw_size < 1.
+    # The min_contracts parameter is only used when contracts >= 1 already.
+    # If raw_size < 1, the trade should be skipped (contracts = 0).
 
     return UnitSize(
         contracts=contracts,
