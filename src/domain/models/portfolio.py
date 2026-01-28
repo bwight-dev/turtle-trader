@@ -7,6 +7,14 @@ from pydantic import BaseModel, Field, computed_field
 
 from src.domain.models.enums import CorrelationGroup
 from src.domain.models.position import Position
+from src.domain.rules import (
+    MAX_TOTAL_RISK,
+    MAX_UNITS_CORRELATED,
+    MAX_UNITS_PER_MARKET,
+    MAX_UNITS_TOTAL,
+    RISK_PER_TRADE,
+    USE_RISK_CAP_MODE,
+)
 
 
 class Portfolio(BaseModel):
@@ -15,7 +23,10 @@ class Portfolio(BaseModel):
     This is the aggregate root that enforces position limits:
     - Rule: Max 4 units per market
     - Rule: Max 6 units in correlated markets
-    - Rule: Max 12 units total
+    - ORIGINAL MODE: Max 12 units total (for ~20 market universe)
+    - MODERN MODE: Max 20% total risk (for 228+ market universe)
+
+    The mode is controlled by USE_RISK_CAP_MODE in rules.py.
     """
 
     model_config = {"frozen": True}
@@ -59,9 +70,10 @@ class Portfolio(BaseModel):
         symbol: str,
         units_to_add: int,
         correlation_group: CorrelationGroup | None = None,
-        max_per_market: int = 4,
-        max_correlated: int = 6,
-        max_total: int = 12,
+        max_per_market: int = MAX_UNITS_PER_MARKET,
+        max_correlated: int = MAX_UNITS_CORRELATED,
+        max_total: int | None = None,
+        use_risk_cap_mode: bool = USE_RISK_CAP_MODE,
     ) -> tuple[bool, str]:
         """Check if units can be added while respecting limits.
 
@@ -69,14 +81,24 @@ class Portfolio(BaseModel):
             symbol: Symbol to add units for
             units_to_add: Number of units to add
             correlation_group: Correlation group of the symbol
-            max_per_market: Max units per market (default 4)
-            max_correlated: Max units in correlated markets (default 6)
-            max_total: Max total portfolio units (default 12)
+            max_per_market: Max units per market (default from rules.py)
+            max_correlated: Max units in correlated markets (default from rules.py)
+            max_total: Max total portfolio units (default from rules.py, ignored in risk cap mode)
+            use_risk_cap_mode: If True, skip unit count check (risk managed by LimitChecker)
 
         Returns:
             Tuple of (allowed, reason)
+
+        Note:
+            In risk cap mode (modern 228+ markets), the total portfolio limit is
+            managed by LimitChecker using total risk %, not unit counts. This
+            method only enforces per-market and correlation limits in that mode.
         """
-        # Check per-market limit
+        # Use configured max_total if not specified
+        if max_total is None:
+            max_total = MAX_UNITS_TOTAL
+
+        # Check per-market limit (always applies)
         current_market_units = 0
         if symbol in self.positions:
             current_market_units = self.positions[symbol].total_units
@@ -84,22 +106,33 @@ class Portfolio(BaseModel):
         if current_market_units + units_to_add > max_per_market:
             return False, f"Would exceed {max_per_market} units in {symbol}"
 
-        # Check correlation limit
+        # Check correlation limit (always applies)
         if correlation_group:
             current_group_units = self.units_in_group(correlation_group)
             if current_group_units + units_to_add > max_correlated:
                 return False, f"Would exceed {max_correlated} units in {correlation_group.value}"
 
-        # Check total limit
-        if self.total_units + units_to_add > max_total:
-            return False, f"Would exceed {max_total} total units"
+        # Check total limit (only in original mode)
+        # In risk cap mode, the LimitChecker enforces total risk %, not unit count
+        if not use_risk_cap_mode:
+            if self.total_units + units_to_add > max_total:
+                return False, f"Would exceed {max_total} total units"
 
         return True, "OK"
 
-    def add_position(self, position: Position) -> "Portfolio":
+    def add_position(
+        self,
+        position: Position,
+        use_risk_cap_mode: bool = USE_RISK_CAP_MODE,
+    ) -> "Portfolio":
         """Add a new position to the portfolio.
 
-        Validates limits before adding.
+        Validates per-market and correlation limits before adding.
+        In risk cap mode, total portfolio limit is managed by LimitChecker.
+
+        Args:
+            position: Position to add
+            use_risk_cap_mode: If True, skip unit count check (default from rules.py)
 
         Returns:
             New Portfolio with added position.
@@ -111,6 +144,7 @@ class Portfolio(BaseModel):
             symbol=position.symbol,
             units_to_add=position.total_units,
             correlation_group=position.correlation_group,
+            use_risk_cap_mode=use_risk_cap_mode,
         )
 
         if not allowed:

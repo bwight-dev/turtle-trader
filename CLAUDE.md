@@ -150,7 +150,9 @@ Market Data (IBKR primary, Yahoo backup) → N/Donchian calculations → Strateg
 ### Position Limits
 - 4 units per market
 - 6 units correlated (e.g., MGC + SIL = metals)
-- 12 units total portfolio
+- **Modern mode (default):** 20% total portfolio risk cap (for 228+ markets)
+- **Original mode:** 12 units total (for historical validation with ~20 markets)
+- Mode controlled by `USE_RISK_CAP_MODE` in `rules.py`
 
 ### N Calculation
 - N = 20-day ATR with Wilders smoothing
