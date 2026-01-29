@@ -29,6 +29,10 @@ from ib_insync import IB
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from src.adapters.repositories.alert_repository import PostgresAlertRepository
+from src.adapters.repositories.position_repository import PostgresOpenPositionRepository
+from src.application.commands.log_alert import AlertLogger, is_significant_change
+from src.domain.models.alert import OpenPositionSnapshot
 from src.domain.models.market import Bar, NValue
 from src.domain.models.position import Position, PyramidLevel
 from src.domain.models.enums import Direction, System
@@ -140,7 +144,11 @@ async def check_position(symbol: str, quantity: int, avg_cost: float) -> dict:
         return {'symbol': symbol, 'error': str(e)}
 
 
-async def run_monitoring_cycle(ib: IB) -> list[dict]:
+async def run_monitoring_cycle(
+    ib: IB,
+    alert_logger: AlertLogger | None = None,
+    position_repo: PostgresOpenPositionRepository | None = None,
+) -> list[dict]:
     """Run a single monitoring cycle."""
     logger.info("=" * 60)
     logger.info(f"MONITORING CYCLE - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -174,6 +182,35 @@ async def run_monitoring_cycle(ib: IB) -> list[dict]:
                     f"P&L ${result['pnl']:.2f}"
                 )
 
+            # Update position snapshot if we have alert logging and significant change
+            if position_repo and alert_logger:
+                try:
+                    existing = await position_repo.get(pos['symbol'])
+                    if existing:
+                        new_price = Decimal(str(result['current_price']))
+                        new_pnl = Decimal(str(result['pnl']))
+                        new_stop = Decimal(str(result['stop_price']))
+
+                        if is_significant_change(existing, new_price, new_pnl, new_stop):
+                            updated = OpenPositionSnapshot(
+                                symbol=existing.symbol,
+                                direction=existing.direction,
+                                system=existing.system,
+                                entry_price=existing.entry_price,
+                                entry_date=existing.entry_date,
+                                contracts=existing.contracts,
+                                units=existing.units,
+                                current_price=new_price,
+                                stop_price=new_stop,
+                                unrealized_pnl=new_pnl,
+                                n_value=existing.n_value,
+                                updated_at=datetime.now(),
+                            )
+                            await alert_logger.update_position(updated)
+                            logger.debug(f"  {pos['symbol']}: Position snapshot updated")
+                except Exception as e:
+                    logger.debug(f"  {pos['symbol']}: Failed to update snapshot: {e}")
+
     # Summary
     actions_needed = [r for r in results if r.get('action') not in ['hold', None]]
     if actions_needed:
@@ -194,6 +231,12 @@ async def main():
     logger.info("Starting Turtle Position Monitor")
     logger.info(f"Mode: {'Single check' if args.once else f'Continuous (every {args.interval}s)'}")
 
+    # Initialize alert repositories for dashboard logging
+    alert_repo = PostgresAlertRepository()
+    position_repo = PostgresOpenPositionRepository()
+    alert_logger = AlertLogger(alert_repo, position_repo)
+    logger.info("Alert logging enabled for dashboard")
+
     # Connect to IBKR
     ib = IB()
     try:
@@ -207,14 +250,14 @@ async def main():
     try:
         if args.once:
             # Single check
-            await run_monitoring_cycle(ib)
+            await run_monitoring_cycle(ib, alert_logger, position_repo)
         else:
             # Continuous monitoring
             cycle = 0
             while True:
                 cycle += 1
                 logger.info(f"\n[Cycle {cycle}]")
-                await run_monitoring_cycle(ib)
+                await run_monitoring_cycle(ib, alert_logger, position_repo)
                 logger.info(f"Next check in {args.interval} seconds...")
                 await asyncio.sleep(args.interval)
 
