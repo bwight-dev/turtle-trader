@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from src.application.commands.log_alert import AlertLogger
+from src.application.commands.log_alert import AlertLogger, is_significant_change
 from src.domain.models.alert import Alert, AlertType, OpenPositionSnapshot
 from src.domain.models.enums import Direction, System
 
@@ -205,3 +205,110 @@ class TestAlertLoggerPositionUpdate:
 
         position = await position_repo.get("EFA")
         assert position.current_price == Decimal("102.00")
+
+
+class TestSignificantChange:
+    """Tests for significant change detection."""
+
+    def test_price_change_above_threshold_is_significant(self):
+        """Price change >0.5% should be significant."""
+        snapshot = OpenPositionSnapshot(
+            symbol="SPY",
+            direction=Direction.LONG,
+            system=System.S1,
+            entry_price=Decimal("450.00"),
+            entry_date=datetime(2026, 1, 29),
+            contracts=100,
+            current_price=Decimal("450.00"),
+            unrealized_pnl=Decimal("0"),
+        )
+
+        # 0.6% price change
+        assert is_significant_change(
+            snapshot,
+            new_price=Decimal("452.70"),
+            new_pnl=Decimal("270.00"),
+        ) is True
+
+    def test_price_change_below_threshold_not_significant(self):
+        """Price change <0.5% should not be significant."""
+        snapshot = OpenPositionSnapshot(
+            symbol="SPY",
+            direction=Direction.LONG,
+            system=System.S1,
+            entry_price=Decimal("450.00"),
+            entry_date=datetime(2026, 1, 29),
+            contracts=100,
+            current_price=Decimal("450.00"),
+            unrealized_pnl=Decimal("0"),
+        )
+
+        # 0.2% price change, $20 P&L change (both below thresholds)
+        assert is_significant_change(
+            snapshot,
+            new_price=Decimal("450.90"),
+            new_pnl=Decimal("20.00"),
+        ) is False
+
+    def test_pnl_change_above_threshold_is_significant(self):
+        """P&L change >$50 should be significant."""
+        snapshot = OpenPositionSnapshot(
+            symbol="SPY",
+            direction=Direction.LONG,
+            system=System.S1,
+            entry_price=Decimal("450.00"),
+            entry_date=datetime(2026, 1, 29),
+            contracts=100,
+            current_price=Decimal("450.00"),
+            unrealized_pnl=Decimal("0"),
+        )
+
+        # Small price change but $60 P&L change
+        assert is_significant_change(
+            snapshot,
+            new_price=Decimal("450.20"),
+            new_pnl=Decimal("60.00"),
+        ) is True
+
+    def test_stop_change_is_significant(self):
+        """Stop price change should be significant."""
+        snapshot = OpenPositionSnapshot(
+            symbol="SPY",
+            direction=Direction.LONG,
+            system=System.S1,
+            entry_price=Decimal("450.00"),
+            entry_date=datetime(2026, 1, 29),
+            contracts=100,
+            current_price=Decimal("450.00"),
+            stop_price=Decimal("440.00"),
+            unrealized_pnl=Decimal("0"),
+        )
+
+        # Small price/pnl change but stop changed
+        assert is_significant_change(
+            snapshot,
+            new_price=Decimal("450.10"),
+            new_pnl=Decimal("10.00"),
+            new_stop=Decimal("442.50"),
+        ) is True
+
+    def test_no_change_not_significant(self):
+        """No meaningful change should not be significant."""
+        snapshot = OpenPositionSnapshot(
+            symbol="SPY",
+            direction=Direction.LONG,
+            system=System.S1,
+            entry_price=Decimal("450.00"),
+            entry_date=datetime(2026, 1, 29),
+            contracts=100,
+            current_price=Decimal("450.00"),
+            stop_price=Decimal("440.00"),
+            unrealized_pnl=Decimal("0"),
+        )
+
+        assert is_significant_change(
+            snapshot,
+            new_price=Decimal("450.10"),
+            new_pnl=Decimal("10.00"),
+            new_stop=Decimal("440.00"),
+        ) is False

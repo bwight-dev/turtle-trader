@@ -11,6 +11,51 @@ from src.domain.interfaces.repositories import AlertRepository, OpenPositionRepo
 from src.domain.models.alert import Alert, AlertType, OpenPositionSnapshot
 from src.domain.models.enums import Direction, System
 
+# Thresholds for significant change detection
+PRICE_CHANGE_THRESHOLD = Decimal("0.005")  # 0.5%
+PNL_CHANGE_THRESHOLD = Decimal("50")  # $50
+
+
+def is_significant_change(
+    current: OpenPositionSnapshot,
+    new_price: Decimal,
+    new_pnl: Decimal,
+    new_stop: Decimal | None = None,
+) -> bool:
+    """Determine if position change warrants a DB write.
+
+    A change is significant if any of these conditions are met:
+    - Price moved more than 0.5%
+    - P&L changed by more than $50
+    - Stop price changed (pyramid happened)
+
+    Args:
+        current: Current position snapshot
+        new_price: New current price
+        new_pnl: New unrealized P&L
+        new_stop: New stop price (if changed)
+
+    Returns:
+        True if change is significant and should be persisted
+    """
+    # Price moved more than 0.5%
+    if current.current_price:
+        price_change = abs(new_price - current.current_price) / current.current_price
+        if price_change > PRICE_CHANGE_THRESHOLD:
+            return True
+
+    # P&L changed by more than $50
+    if current.unrealized_pnl is not None:
+        if abs(new_pnl - current.unrealized_pnl) > PNL_CHANGE_THRESHOLD:
+            return True
+
+    # Stop price changed (pyramid happened)
+    if new_stop and current.stop_price:
+        if new_stop != current.stop_price:
+            return True
+
+    return False
+
 
 class AlertLogger:
     """Command to log alerts and manage position snapshots.
