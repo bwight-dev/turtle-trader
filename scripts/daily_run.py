@@ -19,6 +19,10 @@ import yfinance as yf
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.adapters.backtesting.data_loader import SMALL_ACCOUNT_ETF_UNIVERSE
+from src.adapters.repositories.alert_repository import PostgresAlertRepository
+from src.adapters.repositories.position_repository import PostgresOpenPositionRepository
+from src.application.commands.log_alert import AlertLogger
+from src.domain.models.enums import Direction, System
 from src.domain.models.market import Bar
 from src.domain.services.channels import calculate_all_channels
 from src.domain.services.signal_detector import SignalDetector
@@ -165,7 +169,12 @@ async def main(symbols: list[str] | None = None):
     print(f"\nScanning {len(universe)} markets...")
     print()
 
-    # Initialize
+    # Initialize repositories and logger
+    alert_repo = PostgresAlertRepository()
+    position_repo = PostgresOpenPositionRepository()
+    alert_logger = AlertLogger(alert_repo, position_repo)
+
+    # Initialize signal detector
     detector = SignalDetector()
 
     # Scan all symbols
@@ -179,6 +188,22 @@ async def main(symbols: list[str] | None = None):
             print(f"ERROR: {result['error']}")
         elif result["signals"]:
             print(f"SIGNAL DETECTED!")
+            # Log each signal to database
+            for sig in result["signals"]:
+                try:
+                    await alert_logger.log_signal(
+                        symbol=symbol,
+                        direction=Direction(sig["direction"]),
+                        system=System(sig["system"]),
+                        price=Decimal(str(sig["price"])),
+                        details={
+                            "signal_type": sig["type"],
+                            "channel_value": sig["channel"],
+                            "n_value": result["n_value"],
+                        },
+                    )
+                except Exception as e:
+                    print(f"    (alert log failed: {e})")
         else:
             print("no signal")
 
