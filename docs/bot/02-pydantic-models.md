@@ -579,3 +579,48 @@ class TurtleRules(BaseModel):
 # Default rules instance
 RULES = TurtleRules()
 ```
+
+---
+
+## Additional Models (Post-Implementation)
+
+### Alert Models (`src/domain/models/alert.py`)
+
+Added for website dashboard support. See `docs/plans/2026-01-29-alerts-logging-design.md` for full specification.
+
+```python
+class AlertType(str, Enum):
+    ENTRY_SIGNAL = "ENTRY_SIGNAL"
+    POSITION_OPENED = "POSITION_OPENED"
+    POSITION_CLOSED = "POSITION_CLOSED"
+    EXIT_STOP = "EXIT_STOP"
+    EXIT_BREAKOUT = "EXIT_BREAKOUT"
+    PYRAMID_TRIGGER = "PYRAMID_TRIGGER"
+
+class Alert(BaseModel):
+    """Immutable trading event for dashboard display."""
+    id: UUID
+    timestamp: datetime
+    symbol: str
+    alert_type: AlertType
+    direction: Direction | None
+    system: System | None
+    price: Decimal | None
+    details: dict | None
+    acknowledged: bool
+
+class OpenPositionSnapshot(BaseModel):
+    """Current state of an open position for dashboard."""
+    symbol: str
+    direction: Direction
+    system: System
+    entry_price: Decimal
+    entry_date: datetime
+    contracts: int
+    units: int
+    current_price: Decimal | None
+    stop_price: Decimal | None
+    unrealized_pnl: Decimal | None
+    n_value: Decimal | None
+    updated_at: datetime
+```

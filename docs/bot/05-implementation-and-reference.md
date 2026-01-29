@@ -109,12 +109,17 @@ Deliverables:
 ├── TOS CSV import (from existing skill)
 ├── Monthly report generator
 ├── Portfolio snapshot system
-└── Export tools for compliance
+├── Export tools for compliance
+├── AlertLogger command (dashboard integration) ✓ Added 2026-01-29
+│   ├── alerts table (immutable event log)
+│   └── open_positions table (current state)
+└── Significant change detection (0.5% price, $50 P&L)
 
 Validation Criteria:
 - Import your TOS history successfully
 - Generate report matching manual tracking
 - S1 filter lookups return correct results
+- Dashboard tables populated by monitor/scanner
 ```
 
 ### Phase 5: AI Integration (Week 10-11)

@@ -109,10 +109,13 @@ python scripts/setup_db.py
 # Import TOS trading history
 python scripts/import_tos.py
 
-# Daily run (signal scanner)
+# Backfill existing position to alerts database
+python scripts/backfill_position.py
+
+# Daily run (signal scanner - logs to alerts table)
 python scripts/daily_run.py
 
-# Position monitor (single check)
+# Position monitor (single check - updates open_positions table)
 python scripts/monitor_positions.py --once
 
 # Backtest
@@ -194,14 +197,14 @@ src/
 │   └── rules.py       # TurtleRules configuration
 │
 ├── application/       # Use cases (orchestration layer)
-│   ├── commands/      # Write operations (PlaceEntry, ExecutePyramid, ClosePosition)
+│   ├── commands/      # Write operations (PlaceEntry, ExecutePyramid, ClosePosition, AlertLogger)
 │   ├── queries/       # Read operations (ScanMarkets, GetPortfolio)
 │   └── workflows/     # LangGraph orchestration (DailyWorkflow, MonitoringLoop)
 │
 ├── adapters/          # Interface implementations (infrastructure)
 │   ├── data_feeds/    # IBKRDataFeed, YahooDataFeed, CompositeDataFeed
 │   ├── brokers/       # PaperBroker, IBKRBroker
-│   ├── repositories/  # PostgresNValueRepo, PostgresTradeRepo
+│   ├── repositories/  # PostgresNValueRepo, PostgresTradeRepo, PostgresAlertRepo, PostgresOpenPositionRepo
 │   └── mappers/       # SymbolMapper, IBKRMapper
 │
 └── infrastructure/    # Frameworks & drivers (outermost)
@@ -297,6 +300,7 @@ Original specs in `docs/bot/`:
 Implementation plans in `docs/plans/`:
 - `2026-01-27-implementation-plan.md` - 25 testable milestones with Clean Architecture
 - `2026-01-27-architecture-review.md` - DDD/Clean Architecture analysis
+- `2026-01-29-alerts-logging-design.md` - Dashboard alerts/positions logging (implemented)
 
 ## Validation Criteria
 
