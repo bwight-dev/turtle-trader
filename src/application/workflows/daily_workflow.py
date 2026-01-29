@@ -31,6 +31,7 @@ from src.domain.interfaces.data_feed import DataFeed
 from src.domain.interfaces.repositories import NValueRepository, TradeRepository
 from src.domain.models.enums import Direction, System
 from src.domain.models.portfolio import Portfolio
+from src.domain.services.equity_tracker import get_equity_tracker, init_equity_tracker
 from src.domain.services.limit_checker import LimitChecker
 from src.domain.services.s1_filter import S1Filter
 from src.domain.services.signal_detector import SignalDetector
@@ -243,11 +244,18 @@ def size_positions(state: DailyWorkflowState) -> DailyWorkflowState:
     """Calculate position sizes for validated signals.
 
     Uses Rule 4: Unit = (Risk × Equity) / (N × PointValue)
-    Uses Rule 5: Apply drawdown reduction if applicable
+    Uses Rule 5: Apply drawdown reduction via EquityTracker
+    Uses sizing floor (60% default) to prevent death spiral
     """
     validated = state.get("validated_signals", [])
-    equity = state.get("account_equity", Decimal("100000"))
+    account_equity = state.get("account_equity", Decimal("100000"))
     errors = state.get("errors", [])
+
+    # Use EquityTracker for proper sizing with drawdown handling
+    # This matches the backtest behavior exactly
+    equity_tracker = get_equity_tracker()
+    equity_tracker.update(account_equity)
+    equity = equity_tracker.sizing_equity  # Notional, with floor applied
 
     sized_orders = []
 
@@ -452,6 +460,7 @@ class DailyWorkflow:
         dry_run: bool = True,
         account_equity: Decimal | None = None,
         portfolio: Portfolio | None = None,
+        starting_equity: Decimal | None = None,
     ) -> DailyWorkflowResult:
         """Run the complete daily workflow.
 
@@ -460,11 +469,18 @@ class DailyWorkflow:
             dry_run: If True, simulate without placing orders
             account_equity: Account equity for sizing (fetched from broker if None)
             portfolio: Current portfolio (synced from broker if None)
+            starting_equity: Yearly starting equity for drawdown tracking.
+                            If None, uses account_equity as starting point.
 
         Returns:
             DailyWorkflowResult with all results
         """
         started_at = datetime.now()
+
+        # Initialize equity tracker for proper sizing with drawdown handling
+        # This ensures live trading matches backtest behavior exactly
+        if starting_equity is not None or account_equity is not None:
+            init_equity_tracker(starting_equity or account_equity or Decimal("50000"))
 
         # Build initial state
         initial_state: DailyWorkflowState = {

@@ -18,27 +18,17 @@ import yfinance as yf
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from src.adapters.backtesting.data_loader import SMALL_ACCOUNT_ETF_UNIVERSE
 from src.domain.models.market import Bar
 from src.domain.services.channels import calculate_all_channels
 from src.domain.services.signal_detector import SignalDetector
 from src.domain.services.volatility import calculate_n
 
 
-# Default universe for quick testing (ETFs that Yahoo handles well)
-DEFAULT_UNIVERSE = [
-    "SPY",   # S&P 500
-    "QQQ",   # Nasdaq 100
-    "IWM",   # Russell 2000
-    "DIA",   # Dow Jones
-    "GLD",   # Gold
-    "SLV",   # Silver
-    "USO",   # Oil
-    "TLT",   # 20+ Year Treasury
-    "XLF",   # Financials
-    "XLE",   # Energy
-    "XLK",   # Technology
-    "EEM",   # Emerging Markets
-]
+# Use the validated 15-ETF small account universe
+# This matches the backtest configuration exactly
+# See: docs/research/small-account-turtle-findings.md
+DEFAULT_UNIVERSE = SMALL_ACCOUNT_ETF_UNIVERSE
 
 
 def fetch_bars(symbol: str, days: int = 70) -> list[Bar]:
