@@ -52,6 +52,11 @@ class BacktestConfig:
     # Signal priority
     signal_priority: Literal["strength", "fifo"] = "strength"
 
+    # Small account mode: prevents "death spiral" by setting floor on sizing equity
+    # Set to 0.60 for $50k accounts (never reduce below 60% of starting equity)
+    # Set to None for original Turtle rules (no floor)
+    min_notional_floor: Decimal | None = None
+
     def get_point_value(self, symbol: str) -> Decimal:
         """Get point value for a specific symbol.
 

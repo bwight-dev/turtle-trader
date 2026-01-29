@@ -32,6 +32,80 @@ ETF_UNIVERSE = [
 ]
 
 # ============================================================================
+# SMALL ACCOUNT ETF UNIVERSE ($50k accounts)
+# ============================================================================
+# 15 diversified ETFs covering major asset classes and sectors.
+# ETFs solve the "granularity problem" - can buy exact share amounts.
+#
+# Key insight: With $50k at 0.5% risk ($250/trade), you need instruments
+# where position sizing math allows 1+ shares. ETFs with ~$1-2 daily ATR
+# and prices under $500 work perfectly.
+#
+# Based on:
+# - Tom Basso's diversification research (Market Wizards)
+# - Jerry Parker's ETF advice for small accounts
+# - Salem Abraham's approach (maximize opportunities within capital)
+# ============================================================================
+
+SMALL_ACCOUNT_ETF_UNIVERSE = [
+    # === EQUITY INDEX (3) - broad market exposure ===
+    "SPY",   # S&P 500 - large cap US
+    "QQQ",   # Nasdaq 100 - tech-heavy growth
+    "IWM",   # Russell 2000 - small cap US
+
+    # === INTERNATIONAL EQUITY (2) ===
+    "EFA",   # EAFE - developed international
+    "EEM",   # Emerging Markets
+
+    # === SECTORS (2) - uncorrelated to broad market ===
+    "XLE",   # Energy sector
+    "XLU",   # Utilities sector (defensive, uncorrelated)
+
+    # === BONDS (2) ===
+    "TLT",   # 20+ Year Treasury - long duration
+    "IEF",   # 7-10 Year Treasury - intermediate
+
+    # === COMMODITIES (4) - diversified real assets ===
+    "GLD",   # Gold - precious metals
+    "SLV",   # Silver - precious metals (higher beta)
+    "USO",   # Crude Oil - energy
+    "DBA",   # Agriculture - grains, softs, meats
+
+    # === REAL ESTATE (1) ===
+    "VNQ",   # US REITs - real estate exposure
+
+    # === CURRENCY (1) ===
+    "FXE",   # Euro Currency Trust - forex
+]
+# Total: 15 markets across 8 distinct sectors
+# Provides broad diversification while remaining manageable for $50k
+
+# Small account correlation groups
+SMALL_ACCOUNT_CORRELATION_GROUPS = {
+    # Equity - US (correlated)
+    "equity_us_large": ["SPY"],
+    "equity_us_tech": ["QQQ"],
+    "equity_us_small": ["IWM"],
+    # Equity - International
+    "equity_developed": ["EFA"],
+    "equity_emerging": ["EEM"],
+    # Sectors
+    "sector_energy": ["XLE"],
+    "sector_utilities": ["XLU"],
+    # Bonds
+    "bonds_long": ["TLT"],
+    "bonds_mid": ["IEF"],
+    # Commodities
+    "metals_precious": ["GLD", "SLV"],
+    "energy_oil": ["USO"],
+    "commodities_ag": ["DBA"],
+    # Real Estate
+    "real_estate": ["VNQ"],
+    # Currency
+    "currency_euro": ["FXE"],
+}
+
+# ============================================================================
 # FUTURES UNIVERSES BY ACCOUNT SIZE
 # ============================================================================
 # Dollar volatility = ATR × point_value
@@ -292,9 +366,13 @@ ETF_CORRELATION_GROUPS = {
 def get_correlation_group(symbol: str) -> str | None:
     """Get correlation group for a symbol.
 
-    Checks both ETF and futures correlation groups.
+    Checks small account, ETF, and futures correlation groups.
     """
-    # Check futures first
+    # Check small account groups first (more specific)
+    for group, symbols in SMALL_ACCOUNT_CORRELATION_GROUPS.items():
+        if symbol in symbols:
+            return group
+    # Check futures
     for group, symbols in FUTURES_CORRELATION_GROUPS.items():
         if symbol in symbols:
             return group

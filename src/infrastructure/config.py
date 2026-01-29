@@ -69,6 +69,24 @@ class Settings(BaseSettings):
         default=Decimal("0.20"), alias="DRAWDOWN_EQUITY_REDUCTION"
     )
 
+    # Small Account Mode ($50k)
+    # When enabled, uses 15-market ETF universe and 60% sizing floor
+    use_small_account_mode: bool = Field(
+        default=True,
+        alias="USE_SMALL_ACCOUNT_MODE",
+        description="Enable small account mode (15 ETFs, 60% floor)",
+    )
+    min_notional_floor: Decimal | None = Field(
+        default=Decimal("0.60"),
+        alias="MIN_NOTIONAL_FLOOR",
+        description="Minimum notional equity as fraction of peak (prevents death spiral)",
+    )
+    max_total_risk: Decimal = Field(
+        default=Decimal("0.15"),
+        alias="MAX_TOTAL_RISK",
+        description="Maximum total portfolio risk (15% default)",
+    )
+
     # Cache
     cache_ttl_seconds: int = Field(default=5, alias="CACHE_TTL_SECONDS")
 

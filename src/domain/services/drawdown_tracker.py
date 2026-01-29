@@ -27,6 +27,10 @@ from decimal import Decimal
 from src.domain.models.equity import EquityState
 from src.domain.rules import DRAWDOWN_EQUITY_REDUCTION, DRAWDOWN_THRESHOLD
 
+# Small account default: never reduce below 60% of starting equity
+# This prevents the "death spiral" where sizing becomes too small to trade
+DEFAULT_MIN_NOTIONAL_FLOOR = Decimal("0.60")
+
 
 class DrawdownTracker:
     """Tracks drawdowns and manages notional equity reduction.
@@ -52,6 +56,7 @@ class DrawdownTracker:
         yearly_starting_equity: Decimal,
         drawdown_threshold: Decimal = DRAWDOWN_THRESHOLD,
         reduction_factor: Decimal = DRAWDOWN_EQUITY_REDUCTION,
+        min_notional_floor: Decimal | None = None,
     ) -> None:
         """Initialize the drawdown tracker.
 
@@ -59,12 +64,16 @@ class DrawdownTracker:
             yearly_starting_equity: Starting equity for the year (the recovery target)
             drawdown_threshold: Drawdown % that triggers reduction (default 0.10)
             reduction_factor: Notional reduction factor (default 0.20)
+            min_notional_floor: Minimum notional as fraction of yearly start (default None).
+                               Set to 0.60 for small accounts to prevent "death spiral".
+                               When None, no floor is applied (original Turtle behavior).
         """
         self._yearly_starting_equity = yearly_starting_equity
         self._actual_equity = yearly_starting_equity
         self._notional_equity = yearly_starting_equity
         self._drawdown_threshold = drawdown_threshold
         self._reduction_factor = reduction_factor
+        self._min_notional_floor = min_notional_floor
         self._reduction_level = 0  # Track which 10% level we've hit (0, 1, 2, ...)
 
     @property
@@ -116,6 +125,7 @@ class DrawdownTracker:
         - Recovery check: return to yearly start (not HWM) → restore full size
         - Calculate drawdown from yearly starting equity
         - Apply cascading reductions (0.80^n) for each 10% level
+        - If min_notional_floor is set, never reduce below that percentage
 
         Args:
             new_equity: New account equity value
@@ -141,6 +151,12 @@ class DrawdownTracker:
             reduction_multiplier = (Decimal("1") - self._reduction_factor) ** levels_to_apply
             self._notional_equity = self._notional_equity * reduction_multiplier
             self._reduction_level = current_level
+
+        # Apply floor if configured (prevents "death spiral" for small accounts)
+        if self._min_notional_floor is not None:
+            floor_value = self._yearly_starting_equity * self._min_notional_floor
+            if self._notional_equity < floor_value:
+                self._notional_equity = floor_value
 
     def reset_year(self, new_starting_equity: Decimal) -> None:
         """Reset for a new year.
@@ -182,6 +198,7 @@ class DrawdownTracker:
         state: EquityState,
         drawdown_threshold: Decimal = DRAWDOWN_THRESHOLD,
         reduction_factor: Decimal = DRAWDOWN_EQUITY_REDUCTION,
+        min_notional_floor: Decimal | None = None,
     ) -> "DrawdownTracker":
         """Create tracker from existing equity state.
 
@@ -192,6 +209,7 @@ class DrawdownTracker:
             state: EquityState to restore from
             drawdown_threshold: Drawdown % that triggers reduction
             reduction_factor: Notional reduction factor
+            min_notional_floor: Minimum notional as fraction of yearly start
 
         Returns:
             DrawdownTracker initialized with state values
@@ -200,6 +218,7 @@ class DrawdownTracker:
             yearly_starting_equity=state.peak,
             drawdown_threshold=drawdown_threshold,
             reduction_factor=reduction_factor,
+            min_notional_floor=min_notional_floor,
         )
         tracker._actual_equity = state.actual
         tracker._notional_equity = state.notional

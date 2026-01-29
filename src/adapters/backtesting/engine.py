@@ -64,6 +64,7 @@ class BacktestEngine:
             commission_per_trade=config.commission_per_trade,
             commission_per_contract=config.commission_per_contract,
             point_values=self._point_values,
+            min_notional_floor=config.min_notional_floor,
         )
 
         # Results tracking

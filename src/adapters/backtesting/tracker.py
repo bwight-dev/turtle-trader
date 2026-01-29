@@ -98,6 +98,7 @@ class StateTracker:
         commission_per_contract: Decimal = Decimal("0"),
         point_value: Decimal = Decimal("1.0"),
         point_values: dict[str, Decimal] | None = None,
+        min_notional_floor: Decimal | None = None,
     ):
         """Initialize the state tracker.
 
@@ -107,6 +108,8 @@ class StateTracker:
             commission_per_contract: Commission per contract (for futures)
             point_value: Default dollar value per point (1.0 for ETFs)
             point_values: Per-symbol point values dict (overrides point_value)
+            min_notional_floor: Minimum notional as fraction of starting equity.
+                               Set to 0.60 for small accounts to prevent "death spiral".
         """
         self.initial_equity = initial_equity
         self.cash = initial_equity
@@ -114,6 +117,7 @@ class StateTracker:
         self.commission_per_contract = commission_per_contract
         self._default_point_value = point_value
         self._point_values = point_values or {}
+        self._min_notional_floor = min_notional_floor
 
         # Positions
         self.positions: dict[str, OpenPosition] = {}
@@ -127,7 +131,10 @@ class StateTracker:
 
         # Rule 5: Drawdown tracking via domain service
         # Uses yearly starting equity (not rolling HWM) with cascading reductions
-        self._drawdown_tracker = DrawdownTracker(yearly_starting_equity=initial_equity)
+        self._drawdown_tracker = DrawdownTracker(
+            yearly_starting_equity=initial_equity,
+            min_notional_floor=min_notional_floor,
+        )
 
         # Trade history by symbol (for S1 filter)
         self.trade_history: dict[str, list[TradeRecord]] = {}
