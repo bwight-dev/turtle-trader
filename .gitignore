@@ -74,9 +74,6 @@ Thumbs.db
 # Project specific
 *.bak
 *.tmp
-.claude/
-.gemini/
-skills/
 
 # Docker
 .docker/
