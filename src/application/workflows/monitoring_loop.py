@@ -21,11 +21,18 @@ from decimal import Decimal
 from enum import Enum
 from typing import Callable
 
+from src.application.commands.log_alert import AlertLogger
 from src.application.commands.log_trade import TradeLogger
 from src.application.commands.modify_stop import ModifyStopCommand
 from src.domain.interfaces.broker import Broker
 from src.domain.interfaces.data_feed import DataFeed
-from src.domain.interfaces.repositories import NValueRepository, TradeRepository
+from src.domain.interfaces.repositories import (
+    AlertRepository,
+    NValueRepository,
+    OpenPositionRepository,
+    TradeRepository,
+)
+from src.domain.models.alert import AlertType
 from src.domain.models.enums import Direction, PositionAction
 from src.domain.models.portfolio import Portfolio
 from src.domain.models.position import Position
@@ -124,6 +131,8 @@ class MonitoringLoop:
         data_feed: DataFeed | None = None,
         n_repo: NValueRepository | None = None,
         trade_repo: TradeRepository | None = None,
+        alert_repo: AlertRepository | None = None,
+        position_repo: OpenPositionRepository | None = None,
         check_interval_seconds: float = 60.0,
     ):
         """Initialize the monitoring loop.
@@ -133,13 +142,24 @@ class MonitoringLoop:
             data_feed: Data feed for prices
             n_repo: Repository for N values
             trade_repo: Repository for trade logging
+            alert_repo: Repository for alert logging (dashboard)
+            position_repo: Repository for position snapshots (dashboard)
             check_interval_seconds: Time between monitoring cycles
         """
         self._broker = broker
         self._data_feed = data_feed
         self._n_repo = n_repo
         self._trade_repo = trade_repo
+        self._alert_repo = alert_repo
+        self._position_repo = position_repo
         self._check_interval = check_interval_seconds
+
+        # Create alert logger if repos provided
+        self._alert_logger = (
+            AlertLogger(alert_repo, position_repo)
+            if alert_repo and position_repo
+            else None
+        )
 
         self._status = MonitoringStatus.STOPPED
         self._cycle_count = 0
@@ -315,6 +335,23 @@ class MonitoringLoop:
                         commission=fill.commission,
                     )
 
+                # Log alert for dashboard
+                if self._alert_logger:
+                    alert_type = (
+                        AlertType.EXIT_STOP
+                        if check_result.action == PositionAction.EXIT_STOP
+                        else AlertType.EXIT_BREAKOUT
+                    )
+                    await self._alert_logger.log_exit(
+                        symbol=position.symbol,
+                        alert_type=alert_type,
+                        exit_price=fill.fill_price,
+                        details={
+                            "reason": check_result.reason,
+                            "pnl": float(fill.realized_pnl) if hasattr(fill, 'realized_pnl') else None,
+                        },
+                    )
+
                 return MonitoringAction(
                     symbol=position.symbol,
                     action=check_result.action,
@@ -361,6 +398,16 @@ class MonitoringLoop:
                 # 1. Calculate unit size
                 # 2. Place bracket order
                 # 3. Update stop for entire position (Rule 12)
+
+                # Log alert for dashboard
+                if self._alert_logger and check_result.new_stop:
+                    await self._alert_logger.log_pyramid(
+                        symbol=position.symbol,
+                        trigger_price=check_result.current_price,
+                        new_units=check_result.pyramid_level or (position.unit_count + 1),
+                        new_stop=check_result.new_stop,
+                        new_contracts=position.total_contracts,  # Would be updated after fill
+                    )
 
                 return MonitoringAction(
                     symbol=position.symbol,
