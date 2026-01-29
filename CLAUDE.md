@@ -8,7 +8,7 @@ Turtle Trading Bot is a Python algorithmic trading system implementing classic T
 
 ## Implementation Progress (as of 2026-01-29)
 
-**408 tests passing** (379 unit, 29 integration)
+**454 tests passing** (451 unit, 3 integration for alerts)
 
 | Phase | Milestones | Status |
 |-------|------------|--------|
@@ -72,6 +72,32 @@ Turtle Trading Bot is a Python algorithmic trading system implementing classic T
 ```bash
 # Neon PostgreSQL (cloud-hosted)
 DATABASE_URL=postgresql://neondb_owner:npg_ipM4O8DGaeBP@ep-autumn-morning-afn6oh1a-pooler.c-2.us-west-2.aws.neon.tech/neondb?sslmode=require
+```
+
+### Dashboard Tables
+
+Two additional tables support the website dashboard:
+
+**`alerts`** - Immutable event log for trading signals and actions:
+- `ENTRY_SIGNAL` - Breakout signal detected
+- `POSITION_OPENED` - Order filled, position established
+- `POSITION_CLOSED` - Position fully exited
+- `EXIT_STOP` - 2N stop hit
+- `EXIT_BREAKOUT` - Donchian exit triggered
+- `PYRAMID_TRIGGER` - Pyramid level reached
+
+**`open_positions`** - Current state of open positions (upserted on significant changes)
+
+Query examples:
+```sql
+-- All open positions for dashboard
+SELECT * FROM open_positions ORDER BY entry_date;
+
+-- Recent alerts (last 24h)
+SELECT * FROM alerts WHERE timestamp > NOW() - INTERVAL '24 hours' ORDER BY timestamp DESC;
+
+-- Unacknowledged count for notification badge
+SELECT COUNT(*) FROM alerts WHERE acknowledged = FALSE;
 ```
 
 ## Build & Development Commands
