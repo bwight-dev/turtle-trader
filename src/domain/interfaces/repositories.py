@@ -3,7 +3,9 @@
 from abc import ABC, abstractmethod
 from datetime import date
 from decimal import Decimal
+from uuid import UUID
 
+from src.domain.models.alert import Alert, OpenPositionSnapshot
 from src.domain.models.market import DonchianChannel, NValue
 
 
@@ -119,4 +121,67 @@ class TradeRepository(ABC):
         limit: int = 100,
     ) -> list["Trade"]:  # noqa: F821
         """Get recent trades for a symbol."""
+        ...
+
+
+class AlertRepository(ABC):
+    """Repository interface for alert persistence.
+
+    Alerts are immutable event records used for:
+    - Dashboard notifications
+    - Historical analysis
+    - Audit trail
+    """
+
+    @abstractmethod
+    async def save(self, alert: Alert) -> None:
+        """Save an alert record."""
+        ...
+
+    @abstractmethod
+    async def get_recent(self, limit: int = 50) -> list[Alert]:
+        """Get most recent alerts."""
+        ...
+
+    @abstractmethod
+    async def get_by_symbol(self, symbol: str, limit: int = 20) -> list[Alert]:
+        """Get alerts for a specific symbol."""
+        ...
+
+    @abstractmethod
+    async def get_unacknowledged(self) -> list[Alert]:
+        """Get all unacknowledged alerts."""
+        ...
+
+    @abstractmethod
+    async def acknowledge(self, alert_id: UUID) -> None:
+        """Mark an alert as acknowledged."""
+        ...
+
+
+class OpenPositionRepository(ABC):
+    """Repository interface for open position snapshots.
+
+    Snapshots track current state of open positions for
+    dashboard display. Upserted on significant changes.
+    """
+
+    @abstractmethod
+    async def upsert(self, position: OpenPositionSnapshot) -> None:
+        """Insert or update a position snapshot."""
+        ...
+
+    @abstractmethod
+    async def get_all(self) -> list[OpenPositionSnapshot]:
+        """Get all open position snapshots."""
+        ...
+
+    @abstractmethod
+    async def get(self, symbol: str) -> OpenPositionSnapshot | None:
+        """Get snapshot for a specific symbol."""
+        ...
+
+    @abstractmethod
+    async def delete(self, symbol: str) -> None:
+        """Delete a position snapshot (when position closes)."""
         ...
