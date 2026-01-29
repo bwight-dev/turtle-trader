@@ -1,5 +1,6 @@
 """Unit tests for Alert and OpenPositionSnapshot models."""
 
+from abc import ABC
 from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
@@ -96,3 +97,30 @@ class TestOpenPositionSnapshot:
         assert snapshot.units == 2
         assert snapshot.current_price == Decimal("101.67")
         assert snapshot.stop_price == Decimal("99.73")
+
+
+from src.domain.interfaces.repositories import AlertRepository, OpenPositionRepository
+
+
+class TestRepositoryInterfaces:
+    """Tests for repository interfaces."""
+
+    def test_alert_repository_is_abstract(self):
+        """AlertRepository should be abstract."""
+        assert issubclass(AlertRepository, ABC)
+
+    def test_open_position_repository_is_abstract(self):
+        """OpenPositionRepository should be abstract."""
+        assert issubclass(OpenPositionRepository, ABC)
+
+    def test_alert_repository_has_required_methods(self):
+        """AlertRepository should define required abstract methods."""
+        methods = ['save', 'get_recent', 'get_by_symbol', 'get_unacknowledged', 'acknowledge']
+        for method in methods:
+            assert hasattr(AlertRepository, method)
+
+    def test_open_position_repository_has_required_methods(self):
+        """OpenPositionRepository should define required abstract methods."""
+        methods = ['upsert', 'get_all', 'get', 'delete']
+        for method in methods:
+            assert hasattr(OpenPositionRepository, method)
