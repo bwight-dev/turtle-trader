@@ -1,4 +1,10 @@
-"""Unit tests for drawdown tracker."""
+"""Unit tests for drawdown tracker.
+
+Tests the correct Rule 5 behavior per original Turtle advisor:
+- Cascading reductions (0.80^n) for each 10% drawdown level
+- Recovery threshold is yearly starting equity (not rolling HWM)
+- Annual reset of yearly starting equity
+"""
 
 from decimal import Decimal
 
@@ -16,153 +22,227 @@ class TestDrawdownTracker:
 
     def test_initial_state(self):
         """Initial state has all values equal."""
-        tracker = DrawdownTracker(peak_equity=Decimal("100000"))
+        tracker = DrawdownTracker(yearly_starting_equity=Decimal("100000"))
 
-        assert tracker.peak_equity == Decimal("100000")
+        assert tracker.yearly_starting_equity == Decimal("100000")
         assert tracker.actual_equity == Decimal("100000")
         assert tracker.notional_equity == Decimal("100000")
         assert tracker.drawdown_pct == Decimal("0")
+        assert tracker.reduction_level == 0
         assert not tracker.is_in_drawdown
         assert not tracker.reduction_applied
 
-    def test_drawdown_reduces_notional(self):
-        """Rule 5: 10% drawdown → 20% notional reduction."""
-        tracker = DrawdownTracker(peak_equity=Decimal("100000"))
+    def test_10_pct_drawdown_reduces_notional_by_20_pct(self):
+        """Rule 5: 10% drawdown -> 20% notional reduction (notional = 80%)."""
+        tracker = DrawdownTracker(yearly_starting_equity=Decimal("1000000"))
 
-        # 11% drawdown (breaches 10% threshold)
-        tracker.update_equity(Decimal("89000"))
+        # 10% drawdown
+        tracker.update_equity(Decimal("900000"))
 
-        assert tracker.actual_equity == Decimal("89000")
-        assert tracker.notional_equity == Decimal("80000")  # 100k × 0.8
+        assert tracker.actual_equity == Decimal("900000")
+        assert tracker.notional_equity == Decimal("800000")  # 1M × 0.80
+        assert tracker.reduction_level == 1
         assert tracker.reduction_applied is True
 
-    def test_drawdown_exactly_10_percent(self):
-        """Exactly 10% drawdown triggers reduction."""
-        tracker = DrawdownTracker(peak_equity=Decimal("100000"))
+    def test_20_pct_drawdown_cascades_to_64_pct(self):
+        """Rule 5: 20% drawdown -> cascading reduction (notional = 64%)."""
+        tracker = DrawdownTracker(yearly_starting_equity=Decimal("1000000"))
 
-        tracker.update_equity(Decimal("90000"))  # Exactly 10%
+        # 20% drawdown
+        tracker.update_equity(Decimal("800000"))
 
-        assert tracker.notional_equity == Decimal("80000")
-        assert tracker.reduction_applied is True
+        # Two levels of 20% reduction: 0.80 × 0.80 = 0.64
+        assert tracker.actual_equity == Decimal("800000")
+        assert tracker.notional_equity == Decimal("640000")  # 1M × 0.64
+        assert tracker.reduction_level == 2
 
-    def test_drawdown_under_threshold(self):
-        """Drawdown under 10% does not trigger reduction."""
-        tracker = DrawdownTracker(peak_equity=Decimal("100000"))
+    def test_30_pct_drawdown_cascades_to_512_pct(self):
+        """Rule 5: 30% drawdown -> three levels (notional = 51.2%)."""
+        tracker = DrawdownTracker(yearly_starting_equity=Decimal("1000000"))
 
-        tracker.update_equity(Decimal("91000"))  # 9% drawdown
+        # 30% drawdown
+        tracker.update_equity(Decimal("700000"))
 
-        assert tracker.notional_equity == Decimal("91000")  # No reduction
+        # Three levels: 0.80^3 = 0.512
+        assert tracker.actual_equity == Decimal("700000")
+        assert tracker.notional_equity == Decimal("512000")  # 1M × 0.512
+        assert tracker.reduction_level == 3
+
+    def test_cascading_reductions_applied_incrementally(self):
+        """Cascading reductions applied as we cross each 10% level."""
+        tracker = DrawdownTracker(yearly_starting_equity=Decimal("1000000"))
+
+        # First drop to 10% DD
+        tracker.update_equity(Decimal("900000"))
+        assert tracker.notional_equity == Decimal("800000")  # Level 1
+        assert tracker.reduction_level == 1
+
+        # Further drop to 20% DD
+        tracker.update_equity(Decimal("800000"))
+        # Should cascade from 800k * 0.80 = 640k
+        assert tracker.notional_equity == Decimal("640000")  # Level 2
+        assert tracker.reduction_level == 2
+
+        # Further drop to 30% DD
+        tracker.update_equity(Decimal("700000"))
+        # Should cascade from 640k * 0.80 = 512k
+        assert tracker.notional_equity == Decimal("512000")  # Level 3
+        assert tracker.reduction_level == 3
+
+    def test_drawdown_under_threshold_no_reduction(self):
+        """Drawdown under 10% does not trigger reduction.
+
+        When under threshold, notional stays at yearly starting equity
+        (no penalty applied). This is correct Rule 5 behavior - you
+        don't start reducing until you hit the 10% threshold.
+        """
+        tracker = DrawdownTracker(yearly_starting_equity=Decimal("1000000"))
+
+        # 9% drawdown
+        tracker.update_equity(Decimal("910000"))
+
+        # Notional stays at yearly start - no reduction triggered yet
+        assert tracker.notional_equity == Decimal("1000000")
+        assert tracker.reduction_level == 0
         assert tracker.reduction_applied is False
 
-    def test_recovery_restores_notional(self):
-        """Rule 5: Recovery to peak restores notional."""
-        tracker = DrawdownTracker(peak_equity=Decimal("100000"))
+    def test_recovery_to_yearly_start_restores_full_size(self):
+        """Rule 5: Recovery to yearly starting equity restores notional."""
+        tracker = DrawdownTracker(yearly_starting_equity=Decimal("1000000"))
 
-        # Draw down
-        tracker.update_equity(Decimal("89000"))
-        assert tracker.notional_equity == Decimal("80000")
+        # Draw down to 80%
+        tracker.update_equity(Decimal("800000"))
+        assert tracker.notional_equity == Decimal("640000")  # 2 levels
 
-        # Recover to peak
-        tracker.update_equity(Decimal("100000"))
-        assert tracker.notional_equity == Decimal("100000")
+        # Recover to yearly start
+        tracker.update_equity(Decimal("1000000"))
+        assert tracker.notional_equity == Decimal("1000000")
+        assert tracker.reduction_level == 0
         assert tracker.reduction_applied is False
 
-    def test_new_high_updates_peak(self):
-        """New high updates peak equity."""
-        tracker = DrawdownTracker(peak_equity=Decimal("100000"))
-
-        tracker.update_equity(Decimal("110000"))
-
-        assert tracker.peak_equity == Decimal("110000")
-        assert tracker.notional_equity == Decimal("110000")
-
-    def test_drawdown_from_new_high(self):
-        """Drawdown calculated from new high."""
-        tracker = DrawdownTracker(peak_equity=Decimal("100000"))
-
-        # Make new high
-        tracker.update_equity(Decimal("120000"))
-        assert tracker.peak_equity == Decimal("120000")
-
-        # 10% drawdown from new peak
-        tracker.update_equity(Decimal("108000"))  # 10% of 120k = 12k
-
-        # Notional = 120k × 0.8 = 96k
-        assert tracker.notional_equity == Decimal("96000")
-
-    def test_multiple_drawdowns(self):
-        """Reduction persists through continued drawdown."""
-        tracker = DrawdownTracker(peak_equity=Decimal("100000"))
-
-        # Initial drawdown
-        tracker.update_equity(Decimal("89000"))
-        assert tracker.notional_equity == Decimal("80000")
-
-        # Further drawdown
-        tracker.update_equity(Decimal("85000"))
-        # Notional stays at 80k (reduction already applied)
-        assert tracker.notional_equity == Decimal("80000")
-
-        # Even more drawdown
-        tracker.update_equity(Decimal("70000"))
-        assert tracker.notional_equity == Decimal("80000")
-
-    def test_partial_recovery_no_restore(self):
-        """Partial recovery doesn't restore notional."""
-        tracker = DrawdownTracker(peak_equity=Decimal("100000"))
+    def test_partial_recovery_does_not_restore(self):
+        """Partial recovery doesn't restore notional - must reach yearly start."""
+        tracker = DrawdownTracker(yearly_starting_equity=Decimal("1000000"))
 
         # Draw down
-        tracker.update_equity(Decimal("89000"))
-        assert tracker.notional_equity == Decimal("80000")
+        tracker.update_equity(Decimal("900000"))
+        assert tracker.notional_equity == Decimal("800000")
 
-        # Partial recovery (but not to peak)
-        tracker.update_equity(Decimal("95000"))
-        # Notional stays reduced
-        assert tracker.notional_equity == Decimal("80000")
-        assert tracker.reduction_applied is True
+        # Partial recovery to 95% (still below yearly start)
+        tracker.update_equity(Decimal("950000"))
+        # Notional stays at reduced level
+        assert tracker.notional_equity == Decimal("800000")
+        assert tracker.reduction_level == 1
 
-    def test_drawdown_pct_property(self):
-        """drawdown_pct calculates correctly."""
-        tracker = DrawdownTracker(peak_equity=Decimal("100000"))
+    def test_new_high_above_yearly_start_restores(self):
+        """New high above yearly start restores notional."""
+        tracker = DrawdownTracker(yearly_starting_equity=Decimal("1000000"))
 
-        tracker.update_equity(Decimal("85000"))
+        # Draw down
+        tracker.update_equity(Decimal("900000"))
+        assert tracker.notional_equity == Decimal("800000")
+
+        # New high above yearly start
+        tracker.update_equity(Decimal("1100000"))
+        assert tracker.notional_equity == Decimal("1100000")
+        assert tracker.reduction_level == 0
+
+    def test_drawdown_pct_from_yearly_start(self):
+        """drawdown_pct calculates from yearly starting equity."""
+        tracker = DrawdownTracker(yearly_starting_equity=Decimal("1000000"))
+
+        tracker.update_equity(Decimal("850000"))
 
         assert tracker.drawdown_pct == Decimal("0.15")  # 15%
 
     def test_is_in_drawdown_property(self):
         """is_in_drawdown reflects threshold breach."""
-        tracker = DrawdownTracker(peak_equity=Decimal("100000"))
+        tracker = DrawdownTracker(yearly_starting_equity=Decimal("1000000"))
 
-        tracker.update_equity(Decimal("91000"))
+        tracker.update_equity(Decimal("910000"))
         assert not tracker.is_in_drawdown  # 9% < 10%
 
-        tracker.update_equity(Decimal("89000"))
+        tracker.update_equity(Decimal("890000"))
         assert tracker.is_in_drawdown  # 11% >= 10%
 
-    def test_reset_peak(self):
-        """reset_peak resets all values."""
-        tracker = DrawdownTracker(peak_equity=Decimal("100000"))
-        tracker.update_equity(Decimal("89000"))
+    def test_reset_year(self):
+        """reset_year resets yearly starting equity and all tracking."""
+        tracker = DrawdownTracker(yearly_starting_equity=Decimal("1000000"))
+        tracker.update_equity(Decimal("800000"))
 
-        tracker.reset_peak(Decimal("120000"))
+        # Reset for new year with current equity
+        tracker.reset_year(Decimal("800000"))
 
-        assert tracker.peak_equity == Decimal("120000")
-        assert tracker.actual_equity == Decimal("120000")
-        assert tracker.notional_equity == Decimal("120000")
+        assert tracker.yearly_starting_equity == Decimal("800000")
+        assert tracker.actual_equity == Decimal("800000")
+        assert tracker.notional_equity == Decimal("800000")
+        assert tracker.reduction_level == 0
         assert not tracker.reduction_applied
+
+    def test_reset_peak_alias(self):
+        """reset_peak is alias for reset_year (backwards compatibility)."""
+        tracker = DrawdownTracker(yearly_starting_equity=Decimal("1000000"))
+        tracker.update_equity(Decimal("800000"))
+
+        tracker.reset_peak(Decimal("900000"))
+
+        assert tracker.yearly_starting_equity == Decimal("900000")
+        assert tracker.notional_equity == Decimal("900000")
+        assert tracker.reduction_level == 0
+
+    def test_peak_equity_alias(self):
+        """peak_equity is alias for yearly_starting_equity."""
+        tracker = DrawdownTracker(yearly_starting_equity=Decimal("1000000"))
+
+        assert tracker.peak_equity == Decimal("1000000")
+        assert tracker.peak_equity == tracker.yearly_starting_equity
 
     def test_custom_thresholds(self):
         """Can use custom threshold and reduction."""
         tracker = DrawdownTracker(
-            peak_equity=Decimal("100000"),
+            yearly_starting_equity=Decimal("100000"),
             drawdown_threshold=Decimal("0.05"),  # 5%
             reduction_factor=Decimal("0.25"),  # 25%
         )
 
-        tracker.update_equity(Decimal("94000"))  # 6% drawdown
+        # 6% drawdown (crosses 5% threshold once)
+        tracker.update_equity(Decimal("94000"))
 
         # Notional = 100k × 0.75 = 75k
         assert tracker.notional_equity == Decimal("75000")
+        assert tracker.reduction_level == 1
+
+    def test_example_from_turtle_advisor(self):
+        """Test the exact example from the Turtle advisor."""
+        # Year starts: $1,000,000 (yearly starting equity)
+        tracker = DrawdownTracker(yearly_starting_equity=Decimal("1000000"))
+
+        # Drawdown 10%: Equity = $900,000 -> Trade as if $800,000
+        tracker.update_equity(Decimal("900000"))
+        assert tracker.notional_equity == Decimal("800000")
+
+        # Drawdown 20%: Equity = $800,000 -> Trade as if $640,000
+        tracker.update_equity(Decimal("800000"))
+        assert tracker.notional_equity == Decimal("640000")
+
+        # Recovery: When equity returns to $1,000,000 -> Restore full size
+        tracker.update_equity(Decimal("1000000"))
+        assert tracker.notional_equity == Decimal("1000000")
+        assert tracker.reduction_level == 0
+
+    def test_reduction_stays_until_yearly_start_recovery(self):
+        """Reduction persists until recovery to yearly start, not just improvement."""
+        tracker = DrawdownTracker(yearly_starting_equity=Decimal("1000000"))
+
+        # Draw down to 15% (level 1)
+        tracker.update_equity(Decimal("850000"))
+        assert tracker.notional_equity == Decimal("800000")
+
+        # Improve to 5% DD (still below yearly start)
+        tracker.update_equity(Decimal("950000"))
+        # Still at level 1 - notional unchanged
+        assert tracker.notional_equity == Decimal("800000")
+        assert tracker.reduction_level == 1
 
 
 class TestEquityStateConversion:
@@ -170,80 +250,101 @@ class TestEquityStateConversion:
 
     def test_to_equity_state(self):
         """Convert tracker to EquityState."""
-        tracker = DrawdownTracker(peak_equity=Decimal("100000"))
-        tracker.update_equity(Decimal("89000"))
+        tracker = DrawdownTracker(yearly_starting_equity=Decimal("1000000"))
+        tracker.update_equity(Decimal("900000"))
 
         state = tracker.to_equity_state()
 
         assert isinstance(state, EquityState)
-        assert state.actual == Decimal("89000")
-        assert state.notional == Decimal("80000")
-        assert state.peak == Decimal("100000")
+        assert state.actual == Decimal("900000")
+        assert state.notional == Decimal("800000")
+        assert state.peak == Decimal("1000000")  # yearly_starting_equity
 
     def test_from_equity_state(self):
         """Create tracker from EquityState."""
         state = EquityState(
-            actual=Decimal("89000"),
-            notional=Decimal("80000"),
-            peak=Decimal("100000"),
+            actual=Decimal("900000"),
+            notional=Decimal("800000"),
+            peak=Decimal("1000000"),
         )
 
         tracker = DrawdownTracker.from_equity_state(state)
 
-        assert tracker.actual_equity == Decimal("89000")
-        assert tracker.notional_equity == Decimal("80000")
-        assert tracker.peak_equity == Decimal("100000")
-        assert tracker.reduction_applied is True
+        assert tracker.actual_equity == Decimal("900000")
+        assert tracker.notional_equity == Decimal("800000")
+        assert tracker.yearly_starting_equity == Decimal("1000000")
+        assert tracker.reduction_level == 1
+
+    def test_from_equity_state_multiple_levels(self):
+        """Reconstructs multiple reduction levels from state."""
+        state = EquityState(
+            actual=Decimal("800000"),
+            notional=Decimal("640000"),  # 2 levels: 0.80^2 = 0.64
+            peak=Decimal("1000000"),
+        )
+
+        tracker = DrawdownTracker.from_equity_state(state)
+
+        assert tracker.reduction_level == 2
 
 
 class TestCalculateNotionalEquity:
     """Tests for pure function calculate_notional_equity."""
 
     def test_no_drawdown(self):
-        """At peak, notional = actual."""
+        """At yearly start, notional = actual."""
         notional = calculate_notional_equity(
-            actual_equity=Decimal("100000"),
-            peak_equity=Decimal("100000"),
+            actual_equity=Decimal("1000000"),
+            yearly_starting_equity=Decimal("1000000"),
         )
 
-        assert notional == Decimal("100000")
+        assert notional == Decimal("1000000")
 
-    def test_above_peak(self):
-        """Above peak, notional = actual."""
+    def test_above_yearly_start(self):
+        """Above yearly start, notional = actual."""
         notional = calculate_notional_equity(
-            actual_equity=Decimal("110000"),
-            peak_equity=Decimal("100000"),
+            actual_equity=Decimal("1100000"),
+            yearly_starting_equity=Decimal("1000000"),
         )
 
-        assert notional == Decimal("110000")
+        assert notional == Decimal("1100000")
 
     def test_small_drawdown(self):
-        """Small drawdown, notional = actual."""
+        """Small drawdown (< 10%), notional = yearly start (no reduction)."""
         notional = calculate_notional_equity(
-            actual_equity=Decimal("95000"),
-            peak_equity=Decimal("100000"),
+            actual_equity=Decimal("950000"),
+            yearly_starting_equity=Decimal("1000000"),
         )
 
-        assert notional == Decimal("95000")  # 5% drawdown, no reduction
+        # Under threshold: notional = yearly start (no reduction triggered)
+        assert notional == Decimal("1000000")
 
-    def test_threshold_drawdown(self):
-        """At threshold, notional is reduced."""
+    def test_10_pct_drawdown(self):
+        """10% drawdown -> 80% notional."""
         notional = calculate_notional_equity(
-            actual_equity=Decimal("90000"),
-            peak_equity=Decimal("100000"),
+            actual_equity=Decimal("900000"),
+            yearly_starting_equity=Decimal("1000000"),
         )
 
-        assert notional == Decimal("80000")  # 100k × 0.8
+        assert notional == Decimal("800000")  # 1M × 0.80
 
-    def test_large_drawdown(self):
-        """Large drawdown still uses standard reduction."""
+    def test_20_pct_drawdown(self):
+        """20% drawdown -> 64% notional (cascading)."""
         notional = calculate_notional_equity(
-            actual_equity=Decimal("70000"),  # 30% drawdown
-            peak_equity=Decimal("100000"),
+            actual_equity=Decimal("800000"),
+            yearly_starting_equity=Decimal("1000000"),
         )
 
-        # Notional = peak × (1 - reduction) = 100k × 0.8 = 80k
-        assert notional == Decimal("80000")
+        assert notional == Decimal("640000")  # 1M × 0.64
+
+    def test_30_pct_drawdown(self):
+        """30% drawdown -> 51.2% notional (cascading)."""
+        notional = calculate_notional_equity(
+            actual_equity=Decimal("700000"),
+            yearly_starting_equity=Decimal("1000000"),
+        )
+
+        assert notional == Decimal("512000")  # 1M × 0.512
 
 
 class TestEquityState:

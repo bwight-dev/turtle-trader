@@ -1,9 +1,25 @@
 """Drawdown tracking for Turtle Trading system.
 
-Implements Rule 5: The Drawdown Reduction Rule
-- When equity drops 10% from peak → reduce notional equity by 20%
+Implements Rule 5: The Drawdown Reduction Rule (per original Turtle advisor)
+- Track yearly starting equity (the recovery target)
+- Every 10% drawdown from yearly start → reduce notional by 20% (cascading: 0.80^n)
 - Sizing uses notional equity, not actual
-- When equity recovers to peak → restore notional = actual
+- Recovery to yearly starting equity → restore full trading size
+- Reset yearly starting equity annually
+
+Example:
+    Year starts: $1,000,000 (this is "yearly starting equity")
+
+    Drawdown 10%: Equity = $900,000
+      → Trade as if $800,000 (20% reduction)
+
+    Drawdown 20%: Equity = $800,000
+      → Trade as if $640,000 (another 20% = 0.80 × $800,000)
+
+    Recovery: When equity returns to $1,000,000 (yearly start)
+      → Restore full trading size
+
+    New year: Reset yearly starting equity to current account value
 """
 
 from decimal import Decimal
@@ -15,11 +31,17 @@ from src.domain.rules import DRAWDOWN_EQUITY_REDUCTION, DRAWDOWN_THRESHOLD
 class DrawdownTracker:
     """Tracks drawdowns and manages notional equity reduction.
 
-    Rule 5: The "Risk of Ruin" Rule
-    - Track peak equity (starting or annual high)
-    - When equity drops 10% from peak → reduce notional by 20%
+    Rule 5: The "Risk of Ruin" Rule (per original Turtle advisor)
+    - Track yearly starting equity (the recovery target, NOT rolling HWM)
+    - Every 10% drawdown from yearly start → apply 20% reduction (cascading)
     - All sizing uses notional equity
-    - Recovery to peak restores notional = actual
+    - Recovery to yearly starting equity restores notional = actual
+    - Reset at start of each year
+
+    Key differences from common misimplementations:
+    1. Recovery threshold is YEARLY START, not rolling high-water mark
+    2. Reductions CASCADE: 10% DD → 80%, 20% DD → 64%, 30% DD → 51.2%
+    3. Reset happens ANNUALLY, not on every new high
 
     This class is mutable for convenience in tracking state over time.
     For immutable operations, use EquityState directly.
@@ -27,28 +49,33 @@ class DrawdownTracker:
 
     def __init__(
         self,
-        peak_equity: Decimal,
+        yearly_starting_equity: Decimal,
         drawdown_threshold: Decimal = DRAWDOWN_THRESHOLD,
         reduction_factor: Decimal = DRAWDOWN_EQUITY_REDUCTION,
     ) -> None:
         """Initialize the drawdown tracker.
 
         Args:
-            peak_equity: Starting/peak equity level
+            yearly_starting_equity: Starting equity for the year (the recovery target)
             drawdown_threshold: Drawdown % that triggers reduction (default 0.10)
             reduction_factor: Notional reduction factor (default 0.20)
         """
-        self._peak_equity = peak_equity
-        self._actual_equity = peak_equity
-        self._notional_equity = peak_equity
+        self._yearly_starting_equity = yearly_starting_equity
+        self._actual_equity = yearly_starting_equity
+        self._notional_equity = yearly_starting_equity
         self._drawdown_threshold = drawdown_threshold
         self._reduction_factor = reduction_factor
-        self._reduction_applied = False
+        self._reduction_level = 0  # Track which 10% level we've hit (0, 1, 2, ...)
+
+    @property
+    def yearly_starting_equity(self) -> Decimal:
+        """Yearly starting equity (the recovery target)."""
+        return self._yearly_starting_equity
 
     @property
     def peak_equity(self) -> Decimal:
-        """High-water mark equity."""
-        return self._peak_equity
+        """Alias for yearly_starting_equity for backwards compatibility."""
+        return self._yearly_starting_equity
 
     @property
     def actual_equity(self) -> Decimal:
@@ -61,71 +88,81 @@ class DrawdownTracker:
         return self._notional_equity
 
     @property
+    def reduction_level(self) -> int:
+        """Current reduction level (0 = none, 1 = 10% DD, 2 = 20% DD, etc.)."""
+        return self._reduction_level
+
+    @property
     def drawdown_pct(self) -> Decimal:
-        """Current drawdown as percentage."""
-        if self._peak_equity == 0:
+        """Current drawdown as percentage from yearly starting equity."""
+        if self._yearly_starting_equity == 0:
             return Decimal("0")
-        return (self._peak_equity - self._actual_equity) / self._peak_equity
+        return (self._yearly_starting_equity - self._actual_equity) / self._yearly_starting_equity
 
     @property
     def is_in_drawdown(self) -> bool:
-        """Check if currently in a meaningful drawdown."""
+        """Check if currently in a meaningful drawdown (>= threshold)."""
         return self.drawdown_pct >= self._drawdown_threshold
 
     @property
     def reduction_applied(self) -> bool:
         """Check if notional reduction is currently active."""
-        return self._reduction_applied
+        return self._reduction_level > 0
 
     def update_equity(self, new_equity: Decimal) -> None:
         """Update equity and apply/remove reduction as needed.
 
-        Rule 5 logic:
-        - If equity recovers to peak → restore notional = actual
-        - If drawdown exceeds 10% → reduce notional by 20% of PEAK
-        - Reduction persists until full recovery to peak
-        - Under threshold (no prior reduction), notional = actual
+        Rule 5 logic (per original Turtle advisor):
+        - Recovery check: return to yearly start (not HWM) → restore full size
+        - Calculate drawdown from yearly starting equity
+        - Apply cascading reductions (0.80^n) for each 10% level
 
         Args:
             new_equity: New account equity value
         """
         self._actual_equity = new_equity
 
-        # Check for new peak (recovery)
-        if new_equity >= self._peak_equity:
-            self._peak_equity = new_equity
+        # Recovery check: return to yearly starting equity (not HWM)
+        if new_equity >= self._yearly_starting_equity:
             self._notional_equity = new_equity
-            self._reduction_applied = False
+            self._reduction_level = 0
             return
 
-        # If reduction already applied, keep it until full recovery
-        if self._reduction_applied:
-            # Notional stays at reduced level until recovery to peak
-            return
+        # Calculate drawdown from yearly starting equity
+        drawdown_pct = (self._yearly_starting_equity - new_equity) / self._yearly_starting_equity
 
-        # Calculate current drawdown from peak
-        current_drawdown = (self._peak_equity - new_equity) / self._peak_equity
+        # Calculate which 10% level we're at (0.10 = level 1, 0.20 = level 2, etc.)
+        current_level = int(drawdown_pct / self._drawdown_threshold)
 
-        # Apply reduction if threshold breached
-        if current_drawdown >= self._drawdown_threshold:
-            # Reduce notional by reduction factor (e.g., 20%)
-            # Notional = Peak × (1 - reduction_factor)
-            self._notional_equity = self._peak_equity * (1 - self._reduction_factor)
-            self._reduction_applied = True
-        else:
-            # Under threshold and no prior reduction: notional = actual
-            self._notional_equity = new_equity
+        # Apply cascading reductions if we've hit a new level
+        if current_level > self._reduction_level:
+            levels_to_apply = current_level - self._reduction_level
+            # Each level reduces by 20% (multiply by 0.80)
+            reduction_multiplier = (Decimal("1") - self._reduction_factor) ** levels_to_apply
+            self._notional_equity = self._notional_equity * reduction_multiplier
+            self._reduction_level = current_level
 
-    def reset_peak(self, new_peak: Decimal) -> None:
-        """Reset the peak equity (e.g., at start of new year).
+    def reset_year(self, new_starting_equity: Decimal) -> None:
+        """Reset for a new year.
+
+        Call at start of each year to reset the yearly starting equity
+        to the current account value.
 
         Args:
-            new_peak: New peak equity level
+            new_starting_equity: New yearly starting equity (typically current equity)
         """
-        self._peak_equity = new_peak
-        self._actual_equity = new_peak
-        self._notional_equity = new_peak
-        self._reduction_applied = False
+        self._yearly_starting_equity = new_starting_equity
+        self._actual_equity = new_starting_equity
+        self._notional_equity = new_starting_equity
+        self._reduction_level = 0
+
+    def reset_peak(self, new_peak: Decimal) -> None:
+        """Alias for reset_year for backwards compatibility.
+
+        Args:
+            new_peak: New yearly starting equity
+        """
+        self.reset_year(new_peak)
 
     def to_equity_state(self) -> EquityState:
         """Convert current state to immutable EquityState.
@@ -136,7 +173,7 @@ class DrawdownTracker:
         return EquityState(
             actual=self._actual_equity,
             notional=self._notional_equity,
-            peak=self._peak_equity,
+            peak=self._yearly_starting_equity,
         )
 
     @classmethod
@@ -148,6 +185,9 @@ class DrawdownTracker:
     ) -> "DrawdownTracker":
         """Create tracker from existing equity state.
 
+        Note: This reconstructs the reduction level from the state values.
+        The peak in EquityState is treated as yearly starting equity.
+
         Args:
             state: EquityState to restore from
             drawdown_threshold: Drawdown % that triggers reduction
@@ -157,45 +197,68 @@ class DrawdownTracker:
             DrawdownTracker initialized with state values
         """
         tracker = cls(
-            peak_equity=state.peak,
+            yearly_starting_equity=state.peak,
             drawdown_threshold=drawdown_threshold,
             reduction_factor=reduction_factor,
         )
         tracker._actual_equity = state.actual
         tracker._notional_equity = state.notional
-        tracker._reduction_applied = state.notional < state.actual
+
+        # Reconstruct reduction level from notional vs yearly start
+        # If notional < yearly_start, we have reductions applied
+        if state.notional < state.peak:
+            # Calculate how many levels of 0.80 were applied
+            # notional = yearly_start * 0.80^n
+            # n = log(notional/yearly_start) / log(0.80)
+            if state.peak > 0 and state.notional > 0:
+                ratio = state.notional / state.peak
+                # Each level is 0.80, so count levels
+                level = 0
+                current = Decimal("1")
+                while current * (Decimal("1") - reduction_factor) >= ratio:
+                    current = current * (Decimal("1") - reduction_factor)
+                    level += 1
+                tracker._reduction_level = level
         return tracker
 
 
 def calculate_notional_equity(
     actual_equity: Decimal,
-    peak_equity: Decimal,
+    yearly_starting_equity: Decimal,
     drawdown_threshold: Decimal = DRAWDOWN_THRESHOLD,
     reduction_factor: Decimal = DRAWDOWN_EQUITY_REDUCTION,
 ) -> Decimal:
     """Calculate notional equity based on drawdown rules.
 
-    Pure function version of Rule 5 logic.
+    Pure function version of Rule 5 logic with cascading reductions.
+
+    Note: This function calculates fresh notional equity without tracking
+    history. For proper cascading behavior that respects the "once reduced,
+    stay reduced until recovery" rule, use DrawdownTracker class instead.
 
     Args:
         actual_equity: Current account equity
-        peak_equity: High-water mark equity
+        yearly_starting_equity: Yearly starting equity (recovery target)
         drawdown_threshold: Drawdown % that triggers reduction (default 0.10)
         reduction_factor: Reduction factor to apply (default 0.20)
 
     Returns:
         Notional equity for sizing calculations
     """
-    # If at or above peak, no reduction
-    if actual_equity >= peak_equity:
+    # If at or above yearly start, no reduction
+    if actual_equity >= yearly_starting_equity:
         return actual_equity
 
-    # Calculate drawdown
-    drawdown_pct = (peak_equity - actual_equity) / peak_equity
+    # Calculate drawdown from yearly starting equity
+    drawdown_pct = (yearly_starting_equity - actual_equity) / yearly_starting_equity
 
-    # Apply reduction if threshold breached
-    if drawdown_pct >= drawdown_threshold:
-        return peak_equity * (1 - reduction_factor)
+    # Calculate which 10% level we're at
+    current_level = int(drawdown_pct / drawdown_threshold)
 
-    # Otherwise, notional = actual
-    return actual_equity
+    if current_level > 0:
+        # Apply cascading reductions: 0.80^n
+        reduction_multiplier = (Decimal("1") - reduction_factor) ** current_level
+        return yearly_starting_equity * reduction_multiplier
+
+    # Under threshold: notional = yearly_starting_equity (no penalty applied)
+    return yearly_starting_equity
