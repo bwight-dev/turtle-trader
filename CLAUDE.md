@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Turtle Trading Bot is a Python algorithmic trading system implementing classic Turtle Trading rules with modern adaptations. The project is currently in **active implementation** phase.
 
-## Implementation Progress (as of 2026-01-27)
+## Implementation Progress (as of 2026-01-29)
 
 **408 tests passing** (379 unit, 29 integration)
 
@@ -18,8 +18,15 @@ Turtle Trading Bot is a Python algorithmic trading system implementing classic T
 | Portfolio | M12-M17 | ✓ Complete |
 | Execution | M18-M21 | ✓ Complete |
 | Integration | M22-M25 | ✓ Complete |
+| **Live Testing** | Paper trading | ✓ Active |
 
-**All 25 milestones complete!** Ready for production testing.
+**All 25 milestones complete!** Now in live paper trading on IBKR.
+
+### Current Status
+- **Paper Account**: DUP318628 (IBKR)
+- **Position Monitor**: Running via launchd (every 60s)
+- **Daily Scanner**: Scheduled for 6:30 AM Mon-Fri
+- **Test Position**: EFA long (134 shares @ $101.56)
 
 ### Completed Components:
 - **M1**: Project setup + Neon PostgreSQL connection
@@ -76,13 +83,76 @@ python scripts/setup_db.py
 # Import TOS trading history
 python scripts/import_tos.py
 
-# Daily run
+# Daily run (signal scanner)
 python scripts/daily_run.py
+
+# Position monitor (single check)
+python scripts/monitor_positions.py --once
+
+# Backtest
+python scripts/backtest.py --equity 50000 --symbols SPY QQQ IWM --start 2020-01-01
+
+# Status dashboard
+python scripts/status.py
 
 # Tests
 pytest tests/unit/
 pytest tests/integration/
 pytest tests/backtest/
+```
+
+## Scheduled Tasks (launchd)
+
+Two scheduled tasks run on macOS via launchd. Full details in `docs/SCHEDULING.md`.
+
+### Task Configuration
+
+| Task | Schedule | Script | Log File |
+|------|----------|--------|----------|
+| Daily Scanner | 6:30 AM Mon-Fri | `scripts/daily_run.py` | `logs/daily.error.log` |
+| Position Monitor | Every 60 seconds | `scripts/monitor_positions.py` | `logs/monitor.error.log` |
+
+### Plist Locations
+```
+~/Library/LaunchAgents/com.turtle.daily.plist
+~/Library/LaunchAgents/com.turtle.monitor.plist
+```
+
+### Quick Monitoring Commands
+
+```bash
+# Check job status
+launchctl list | grep turtle
+
+# Watch position monitor in real-time
+tail -f logs/monitor.error.log
+
+# Watch daily scanner
+tail -f logs/daily.error.log
+
+# Status dashboard (positions, jobs, logs)
+python scripts/status.py
+
+# Stop/start monitor
+launchctl unload ~/Library/LaunchAgents/com.turtle.monitor.plist
+launchctl load ~/Library/LaunchAgents/com.turtle.monitor.plist
+```
+
+### Monitor Output Example
+```
+[Cycle 5]
+============================================================
+MONITORING CYCLE - 2026-01-29 13:15:31
+============================================================
+Checking 1 position(s)...
+  EFA: HOLD | Price $101.53 | Stop $99.73 | P&L $-4.35
+------------------------------------------------------------
+Next check in 60 seconds...
+```
+
+When action is needed:
+```
+  EFA: >>> EXIT_STOP <<< - 2N stop hit: price 99.70 at or below stop 99.73
 ```
 
 ## Architecture (Clean Architecture)
