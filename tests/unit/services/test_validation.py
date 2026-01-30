@@ -156,3 +156,97 @@ class TestFilterValidBars:
         valid_bars = filter_valid_bars(bars)
         for i, bar in enumerate(valid_bars):
             assert bar.date == date(2026, 1, i + 1)
+
+
+class TestZeroCloseValidation:
+    """Tests for zero close price handling in compare_bars."""
+
+    def test_zero_close_first_bar(self):
+        """Test that zero close in first bar fails comparison."""
+        bar1 = Bar(
+            symbol="TEST",
+            date=date(2026, 1, 1),
+            open=Decimal("100"),
+            high=Decimal("105"),
+            low=Decimal("0.01"),  # Must be positive
+            close=Decimal("0.01"),  # Near-zero close
+        )
+        bar2 = make_valid_bar()
+        # When calculating deviation, near-zero will cause issues
+        consistent, reason = compare_bars(bar1, bar2)
+        # Should fail due to large deviation
+        assert consistent is False
+
+    def test_compare_bars_with_matching_near_zero(self):
+        """Test comparing bars with matching near-zero closes."""
+        bar1 = Bar(
+            symbol="TEST",
+            date=date(2026, 1, 1),
+            open=Decimal("0.01"),
+            high=Decimal("0.02"),
+            low=Decimal("0.005"),
+            close=Decimal("0.01"),
+        )
+        bar2 = Bar(
+            symbol="TEST",
+            date=date(2026, 1, 1),
+            open=Decimal("0.01"),
+            high=Decimal("0.02"),
+            low=Decimal("0.005"),
+            close=Decimal("0.01"),
+        )
+        consistent, reason = compare_bars(bar1, bar2)
+        assert consistent is True
+
+
+class TestValidationEdgeCases:
+    """Additional edge case tests for validation."""
+
+    def test_validate_bar_with_gap_up(self):
+        """Test bar with gap up (open > previous close)."""
+        bar = Bar(
+            symbol="TEST",
+            date=date(2026, 1, 2),
+            open=Decimal("110"),  # Gap up from 102
+            high=Decimal("115"),
+            low=Decimal("108"),
+            close=Decimal("112"),
+        )
+        valid, reason = validate_bar(bar)
+        assert valid is True
+
+    def test_validate_bar_with_large_range(self):
+        """Test bar with large high-low range."""
+        bar = Bar(
+            symbol="TEST",
+            date=date(2026, 1, 1),
+            open=Decimal("100"),
+            high=Decimal("150"),  # 50% range
+            low=Decimal("100"),
+            close=Decimal("145"),
+        )
+        valid, reason = validate_bar(bar)
+        assert valid is True
+
+    def test_validate_bars_collects_all_errors(self):
+        """Test that validate_bars reports all errors found."""
+        bars = [make_valid_bar(dt=date(2026, 1, i + 1)) for i in range(3)]
+        valid, errors = validate_bars(bars)
+        assert valid is True
+        assert len(errors) == 0
+
+    def test_compare_bars_exact_tolerance(self):
+        """Test bars at exact tolerance boundary."""
+        bar1 = make_valid_bar(c="100.00", h="110", l="90")
+        bar2 = make_valid_bar(c="102.00", h="110", l="90")  # Exactly 2% deviation
+        consistent, reason = compare_bars(bar1, bar2, max_deviation_pct=Decimal("2.0"))
+        # Should pass at exactly 2%
+        assert consistent is True
+
+    def test_compare_bars_just_over_tolerance(self):
+        """Test bars just over tolerance."""
+        bar1 = make_valid_bar(c="100.00", h="110", l="90")
+        bar2 = make_valid_bar(c="102.01", h="110", l="90")  # Just over 2%
+        consistent, reason = compare_bars(bar1, bar2, max_deviation_pct=Decimal("2.0"))
+        assert consistent is False
+        assert "deviation" in reason.lower()
