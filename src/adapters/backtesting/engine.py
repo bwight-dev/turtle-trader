@@ -6,7 +6,7 @@ and performance tracking.
 """
 
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from typing import Literal
 
 from src.adapters.backtesting.data_loader import (
@@ -107,6 +107,13 @@ class BacktestEngine:
     def _get_point_value(self, symbol: str) -> Decimal:
         """Get point value for a specific symbol."""
         return self._point_values.get(symbol, self.config.default_point_value)
+
+    def _is_etf(self, symbol: str) -> bool:
+        """Check if symbol is an ETF (point_value == 1.0).
+
+        ETFs support fractional shares, while futures require whole contracts.
+        """
+        return self._get_point_value(symbol) == Decimal("1")
 
     def run(self, show_progress: bool = True) -> BacktestResult:
         """Run the backtest.
@@ -378,14 +385,19 @@ class BacktestEngine:
 
                 # Calculate size for pyramid (using notional equity per Rule 5)
                 point_value = self._get_point_value(symbol)
+                is_etf = self._is_etf(symbol)
                 size = calculate_unit_size(
                     equity=self.tracker.sizing_equity,
                     n_value=n_value.value,
                     point_value=point_value,
                     risk_pct=self.config.risk_per_unit,
+                    allow_fractional=is_etf,
                 )
 
-                if size.contracts < 1:
+                # For ETFs, allow fractional shares (min 0.001)
+                # For futures, require at least 1 contract
+                min_size = Decimal("0.001") if is_etf else Decimal("1")
+                if size.contracts < min_size:
                     continue
 
                 # Calculate new stop (2N from newest entry)
@@ -533,16 +545,22 @@ class BacktestEngine:
 
         # Get point value for this symbol
         point_value = self._get_point_value(symbol)
+        is_etf = self._is_etf(symbol)
 
         # Calculate size based on risk (using notional equity per Rule 5)
+        # ETFs use fractional shares for precise risk management
         size = calculate_unit_size(
             equity=self.tracker.sizing_equity,
             n_value=n_value,
             point_value=point_value,
             risk_pct=self.config.risk_per_unit,
+            allow_fractional=is_etf,
         )
 
-        if size.contracts < 1:
+        # For ETFs, allow fractional shares (min 0.001)
+        # For futures, require at least 1 contract
+        min_size = Decimal("0.001") if is_etf else Decimal("1")
+        if size.contracts < min_size:
             self.signals_skipped_size += 1
             return False
 
@@ -555,8 +573,15 @@ class BacktestEngine:
 
         if position_value > max_position_value:
             # Scale down to max allowed
-            contracts = int(max_position_value / (entry_price * point_value))
-            if contracts < 1:
+            if is_etf:
+                # ETFs: precise fractional scaling
+                contracts = (max_position_value / (entry_price * point_value)).quantize(
+                    Decimal("0.000001"), rounding=ROUND_DOWN
+                )
+            else:
+                # Futures: whole contracts only
+                contracts = Decimal(int(max_position_value / (entry_price * point_value)))
+            if contracts < min_size:
                 self.signals_skipped_size += 1
                 return False
 

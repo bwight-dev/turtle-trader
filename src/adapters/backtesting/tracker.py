@@ -25,20 +25,23 @@ class OpenPosition:
     entry_date: date
     entry_price: Decimal
     entry_n: Decimal
-    contracts: int
+    contracts: Decimal  # May be fractional for ETFs
     units: int = 1
 
     # Stop
     stop_price: Decimal = Decimal("0")
 
-    # Pyramiding
-    pyramid_entries: list[tuple[date, Decimal, int]] = field(default_factory=list)
+    # Pyramiding - contracts may be fractional (Decimal)
+    pyramid_entries: list[tuple[date, Decimal, Decimal]] = field(default_factory=list)
 
     # Tracking
     correlation_group: str | None = None
     last_pyramid_price: Decimal | None = None
 
     def __post_init__(self):
+        # Ensure contracts is Decimal
+        if not isinstance(self.contracts, Decimal):
+            self.contracts = Decimal(str(self.contracts))
         if not self.pyramid_entries:
             self.pyramid_entries = [(self.entry_date, self.entry_price, self.contracts)]
         if not self.last_pyramid_price:
@@ -54,8 +57,8 @@ class OpenPosition:
         return total_value / total_contracts
 
     @property
-    def total_contracts(self) -> int:
-        """Total contracts including pyramids."""
+    def total_contracts(self) -> Decimal:
+        """Total contracts including pyramids (may be fractional for ETFs)."""
         return sum(c for _, _, c in self.pyramid_entries)
 
     def mark_to_market(self, current_price: Decimal) -> Decimal:
@@ -69,10 +72,13 @@ class OpenPosition:
         self,
         date: date,
         price: Decimal,
-        contracts: int,
+        contracts: Decimal,
         new_stop: Decimal,
     ) -> None:
         """Add a pyramid entry."""
+        # Ensure contracts is Decimal
+        if not isinstance(contracts, Decimal):
+            contracts = Decimal(str(contracts))
         self.pyramid_entries.append((date, price, contracts))
         self.units += 1
         self.contracts = self.total_contracts
@@ -221,7 +227,7 @@ class StateTracker:
         entry_date: date,
         entry_price: Decimal,
         entry_n: Decimal,
-        contracts: int,
+        contracts: Decimal,
         stop_price: Decimal,
         correlation_group: str | None = None,
     ) -> OpenPosition:
@@ -238,13 +244,17 @@ class StateTracker:
             entry_date: Entry date
             entry_price: Entry price
             entry_n: N value at entry (for sizing/stops)
-            contracts: Number of contracts
+            contracts: Number of contracts (may be fractional for ETFs)
             stop_price: Initial stop price
             correlation_group: For limit tracking
 
         Returns:
             The opened position
         """
+        # Ensure contracts is Decimal
+        if not isinstance(contracts, Decimal):
+            contracts = Decimal(str(contracts))
+
         # Commission = per-trade fee + per-contract fee
         commission = self.commission_per_trade + (self.commission_per_contract * contracts)
 
@@ -273,12 +283,16 @@ class StateTracker:
         symbol: str,
         pyramid_date: date,
         price: Decimal,
-        contracts: int,
+        contracts: Decimal,
         new_stop: Decimal,
     ) -> None:
         """Add pyramid to existing position."""
         if symbol not in self.positions:
             raise ValueError(f"No position for {symbol}")
+
+        # Ensure contracts is Decimal
+        if not isinstance(contracts, Decimal):
+            contracts = Decimal(str(contracts))
 
         position = self.positions[symbol]
 

@@ -202,7 +202,7 @@ def main():
                     "exit_date": str(t.exit_date),
                     "exit_price": float(t.exit_price),
                     "exit_reason": t.exit_reason,
-                    "contracts": t.contracts,
+                    "contracts": float(t.contracts),
                     "net_pnl": float(t.net_pnl),
                 }
                 for t in result.trades
