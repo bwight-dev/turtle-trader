@@ -273,6 +273,57 @@ Market Data (IBKR primary, Yahoo backup) → N/Donchian calculations → Strateg
 - **Gateway**: Port 4002 (paper) / 4001 (live)
 - TWS runs on Mac Mini (local)
 
+### Keeping IBKR Connected
+
+TWS disconnects for several reasons. Here's how to prevent issues:
+
+**1. Use IB Gateway instead of TWS** (Recommended)
+- IB Gateway is headless and more stable than TWS
+- Download from IBKR website → "IB Gateway" (not TWS)
+- Same ports, less resource usage, fewer disconnects
+
+**2. TWS Auto-Restart Settings** (if using TWS)
+In TWS: Edit → Global Configuration → API → Settings:
+- ✓ Enable ActiveX and Socket Clients
+- ✓ Allow connections from localhost only
+- ✓ Read-Only API (disable for trading)
+- Set "Trusted IPs" to 127.0.0.1
+
+In TWS: Edit → Global Configuration → Lock and Exit:
+- Set "Auto restart" time (e.g., 11:45 PM ET - after market close)
+- ✓ "Auto logoff" disabled (or set very late)
+
+**3. Keep Mac Mini Awake**
+```bash
+# Prevent sleep (run in terminal on Mac Mini)
+caffeinate -d -i -s &
+
+# Or use pmset (permanent)
+sudo pmset -a sleep 0
+sudo pmset -a disksleep 0
+```
+
+**4. Common Disconnect Causes**
+- **Daily restart**: TWS restarts daily ~11:45 PM ET (configurable)
+- **Weekend maintenance**: IBKR servers down Sat night
+- **Inactivity timeout**: 2FA re-authentication required periodically
+- **Network issues**: Check Mac Mini network stability
+
+**5. Monitor Reconnection** (added 2026-02-02)
+The position monitor now auto-reconnects when IBKR disconnects:
+```
+IBKR connection lost, attempting to reconnect...
+Reconnection attempt 1/3...
+Reconnected to IBKR: ['DUP318628']
+```
+
+After 10 consecutive failures, the monitor exits so launchd can restart it fresh.
+
+If reconnection fails repeatedly, check:
+1. Is TWS/Gateway running? `pgrep -l -f "tws\|gateway"`
+2. Is the API port open? `nc -z 127.0.0.1 7497 && echo "Port open"`
+3. Restart TWS/Gateway manually if needed
+
 ## Implementation Plan
 
 **25 testable milestones** (1-3 days each) with automated tests + manual TOS comparison.

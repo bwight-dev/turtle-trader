@@ -81,6 +81,38 @@ async def get_ibkr_positions(ib: IB) -> list[dict]:
     return positions
 
 
+async def ensure_connected(ib: IB, max_retries: int = 3, retry_delay: int = 10) -> bool:
+    """Ensure IBKR connection is alive, reconnect if needed.
+
+    Args:
+        ib: IB connection instance
+        max_retries: Maximum reconnection attempts
+        retry_delay: Seconds between retry attempts
+
+    Returns:
+        True if connected, False if all retries failed
+    """
+    if ib.isConnected():
+        return True
+
+    logger.warning("IBKR connection lost, attempting to reconnect...")
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            logger.info(f"Reconnection attempt {attempt}/{max_retries}...")
+            await ib.connectAsync('127.0.0.1', 7497, clientId=98, timeout=10)
+            logger.info(f"Reconnected to IBKR: {ib.managedAccounts()}")
+            return True
+        except Exception as e:
+            logger.error(f"Reconnection attempt {attempt} failed: {e}")
+            if attempt < max_retries:
+                logger.info(f"Waiting {retry_delay}s before next attempt...")
+                await asyncio.sleep(retry_delay)
+
+    logger.error(f"Failed to reconnect after {max_retries} attempts")
+    return False
+
+
 async def check_position(symbol: str, quantity: int, avg_cost: float) -> dict:
     """Check a single position against turtle rules."""
     try:
@@ -254,9 +286,30 @@ async def main():
         else:
             # Continuous monitoring
             cycle = 0
+            consecutive_failures = 0
+            max_consecutive_failures = 10  # Exit after 10 consecutive reconnection failures
+
             while True:
                 cycle += 1
                 logger.info(f"\n[Cycle {cycle}]")
+
+                # Check connection and reconnect if needed
+                if not await ensure_connected(ib):
+                    consecutive_failures += 1
+                    logger.error(f"Connection unavailable (failure {consecutive_failures}/{max_consecutive_failures})")
+
+                    if consecutive_failures >= max_consecutive_failures:
+                        logger.error("Too many consecutive connection failures, exiting")
+                        logger.error("Check that TWS is running and API connections are enabled")
+                        return 1
+
+                    logger.info(f"Next reconnection attempt in {args.interval} seconds...")
+                    await asyncio.sleep(args.interval)
+                    continue
+
+                # Reset failure counter on successful connection
+                consecutive_failures = 0
+
                 await run_monitoring_cycle(ib, alert_logger, position_repo)
                 logger.info(f"Next check in {args.interval} seconds...")
                 await asyncio.sleep(args.interval)
@@ -264,7 +317,8 @@ async def main():
     except KeyboardInterrupt:
         logger.info("\nMonitoring stopped by user")
     finally:
-        ib.disconnect()
+        if ib.isConnected():
+            ib.disconnect()
         logger.info("Disconnected from IBKR")
 
     return 0
