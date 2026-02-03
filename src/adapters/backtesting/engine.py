@@ -3,6 +3,10 @@
 Simulates day-by-day trading using historical data and Turtle rules.
 Coordinates data loading, signal detection, position management,
 and performance tracking.
+
+Uses domain services for signal detection to ensure consistency with live trading:
+- SignalDetector: Breakout signal detection (S1/S2)
+- Domain models: Signal, DonchianChannel, etc.
 """
 
 from datetime import date, timedelta
@@ -18,8 +22,11 @@ from src.adapters.backtesting.data_loader import (
 )
 from src.adapters.backtesting.models import BacktestConfig, BacktestResult
 from src.adapters.backtesting.tracker import OpenPosition, StateTracker
+from src.domain.models.enums import Direction, System
 from src.domain.models.market import Bar, DonchianChannel
+from src.domain.models.signal import Signal
 from src.domain.services.channels import calculate_donchian
+from src.domain.services.signal_detector import SignalDetector
 from src.domain.services.sizing import calculate_unit_size
 from src.domain.services.volatility import calculate_n
 
@@ -66,6 +73,9 @@ class BacktestEngine:
             point_values=self._point_values,
             min_notional_floor=config.min_notional_floor,
         )
+
+        # Domain services - use same logic as live trading
+        self._signal_detector = SignalDetector()
 
         # Results tracking
         self.signals_generated = 0
@@ -404,7 +414,12 @@ class BacktestEngine:
                 self.pyramid_triggers += 1
 
     def _process_new_signals(self, current_date: date, bars_today: dict[str, Bar]) -> None:
-        """Detect, filter, and execute new entry signals."""
+        """Detect, filter, and execute new entry signals.
+
+        Uses domain SignalDetector for consistent logic with live trading.
+        For backtesting, we check bar.high for longs and bar.low for shorts
+        to simulate intraday breakout detection.
+        """
         signals = []
 
         for symbol in self.symbols:
@@ -429,12 +444,10 @@ class BacktestEngine:
             except ValueError:
                 continue
 
-            current_price = bar.close
-
-            # Detect S1 signal (20-day breakout)
+            # Detect S1 signal (20-day breakout) using domain SignalDetector
             if self.config.use_s1:
-                s1_signal = self._detect_signal(
-                    symbol, current_price, dc_20, "S1", bar, n_value.value
+                s1_signal = self._detect_breakout_signal(
+                    symbol, bar, dc_20, System.S1, n_value.value
                 )
                 if s1_signal:
                     # Apply S1 filter (Rule 7)
@@ -446,8 +459,8 @@ class BacktestEngine:
 
             # Detect S2 signal (55-day breakout) - always take (failsafe)
             if self.config.use_s2:
-                s2_signal = self._detect_signal(
-                    symbol, current_price, dc_55, "S2", bar, n_value.value
+                s2_signal = self._detect_breakout_signal(
+                    symbol, bar, dc_55, System.S2, n_value.value
                 )
                 if s2_signal:
                     signals.append(s2_signal)
@@ -461,51 +474,66 @@ class BacktestEngine:
         for signal in signals:
             self._try_enter_position(current_date, signal)
 
-    def _detect_signal(
+    def _detect_breakout_signal(
         self,
         symbol: str,
-        price: Decimal,
-        channel: DonchianChannel,
-        system: Literal["S1", "S2"],
         bar: Bar,
+        channel: DonchianChannel,
+        system: System,
         n_value: Decimal,
     ) -> dict | None:
-        """Detect a breakout signal.
+        """Detect a breakout signal using domain SignalDetector.
+
+        For backtesting, we check if bar.high/low touched the channel
+        to simulate intraday breakout detection, then calculate a
+        realistic entry price accounting for gaps.
 
         Returns signal dict with strength metric for prioritization.
         """
-        direction = None
-        channel_value = None
+        signal: Signal | None = None
+        entry_price: Decimal | None = None
 
-        # Check for long breakout (price > channel upper)
+        # Check for long breakout: did bar.high touch channel upper?
         if bar.high > channel.upper:
-            direction = "LONG"
-            channel_value = channel.upper
-            # Use high as entry price if breakout
-            entry_price = max(channel.upper, bar.open)  # Gap handling
+            # Use domain SignalDetector with the high price
+            signal = self._signal_detector.detect_s1_signal(
+                symbol, bar.high, channel
+            ) if system == System.S1 else self._signal_detector.detect_s2_signal(
+                symbol, bar.high, channel
+            )
+            if signal:
+                # Calculate realistic entry price (gap handling)
+                entry_price = max(channel.upper, bar.open)
 
-        # Check for short breakout (price < channel lower)
+        # Check for short breakout: did bar.low touch channel lower?
         elif bar.low < channel.lower and self.config.allow_short:
-            direction = "SHORT"
-            channel_value = channel.lower
-            entry_price = min(channel.lower, bar.open)
+            # Use domain SignalDetector with the low price
+            signal = self._signal_detector.detect_s1_signal(
+                symbol, bar.low, channel
+            ) if system == System.S1 else self._signal_detector.detect_s2_signal(
+                symbol, bar.low, channel
+            )
+            if signal:
+                # Calculate realistic entry price (gap handling)
+                entry_price = min(channel.lower, bar.open)
 
-        if not direction:
+        if not signal or entry_price is None:
             return None
 
-        # Calculate strength: (price - breakout) / N
+        # Calculate strength: distance from channel / N
         # Higher = stronger breakout
-        if direction == "LONG":
-            strength = (entry_price - channel_value) / n_value if n_value > 0 else Decimal("0")
+        if signal.direction == Direction.LONG:
+            strength = (entry_price - channel.upper) / n_value if n_value > 0 else Decimal("0")
         else:
-            strength = (channel_value - entry_price) / n_value if n_value > 0 else Decimal("0")
+            strength = (channel.lower - entry_price) / n_value if n_value > 0 else Decimal("0")
 
+        # Convert domain Signal to backtest dict format
         return {
             "symbol": symbol,
-            "direction": direction,
-            "system": system,
+            "direction": "LONG" if signal.direction == Direction.LONG else "SHORT",
+            "system": "S1" if system == System.S1 else "S2",
             "entry_price": entry_price,
-            "channel_value": channel_value,
+            "channel_value": signal.channel_value,
             "n_value": n_value,
             "strength": strength,
             "correlation_group": get_correlation_group(symbol),
