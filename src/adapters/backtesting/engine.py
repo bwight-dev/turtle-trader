@@ -484,44 +484,38 @@ class BacktestEngine:
     ) -> dict | None:
         """Detect a breakout signal using domain SignalDetector.
 
-        For backtesting, we check if bar.high/low touched the channel
-        to simulate intraday breakout detection, then calculate a
-        realistic entry price accounting for gaps.
+        Uses the SAME detection logic as live trading. For backtesting,
+        we pass bar.high to check for long breakouts and bar.low for shorts,
+        simulating intraday price action.
 
         Returns signal dict with strength metric for prioritization.
         """
-        signal: Signal | None = None
-        entry_price: Decimal | None = None
+        # Use domain SignalDetector - SAME logic as live trading
+        # Pass bar.high to detect long breakouts (highest price of the day)
+        detect_func = (
+            self._signal_detector.detect_s1_signal
+            if system == System.S1
+            else self._signal_detector.detect_s2_signal
+        )
 
-        # Check for long breakout: did bar.high touch channel upper?
-        if bar.high > channel.upper:
-            # Use domain SignalDetector with the high price
-            signal = self._signal_detector.detect_s1_signal(
-                symbol, bar.high, channel
-            ) if system == System.S1 else self._signal_detector.detect_s2_signal(
-                symbol, bar.high, channel
-            )
-            if signal:
-                # Calculate realistic entry price (gap handling)
-                entry_price = max(channel.upper, bar.open)
+        # Try long breakout (using bar.high)
+        signal = detect_func(symbol, bar.high, channel)
 
-        # Check for short breakout: did bar.low touch channel lower?
-        elif bar.low < channel.lower and self.config.allow_short:
-            # Use domain SignalDetector with the low price
-            signal = self._signal_detector.detect_s1_signal(
-                symbol, bar.low, channel
-            ) if system == System.S1 else self._signal_detector.detect_s2_signal(
-                symbol, bar.low, channel
-            )
-            if signal:
-                # Calculate realistic entry price (gap handling)
+        if signal and signal.direction == Direction.LONG:
+            # Calculate realistic entry price (gap handling)
+            entry_price = max(channel.upper, bar.open)
+
+        # Try short breakout (using bar.low) if no long signal and shorts allowed
+        elif self.config.allow_short:
+            signal = detect_func(symbol, bar.low, channel)
+            if signal and signal.direction == Direction.SHORT:
                 entry_price = min(channel.lower, bar.open)
-
-        if not signal or entry_price is None:
+            else:
+                return None
+        else:
             return None
 
         # Calculate strength: distance from channel / N
-        # Higher = stronger breakout
         if signal.direction == Direction.LONG:
             strength = (entry_price - channel.upper) / n_value if n_value > 0 else Decimal("0")
         else:
