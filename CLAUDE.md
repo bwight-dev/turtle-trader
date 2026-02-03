@@ -132,14 +132,21 @@ pytest tests/backtest/
 
 ## Scheduled Tasks (launchd)
 
-Two scheduled tasks run on macOS via launchd. Full details in `docs/SCHEDULING.md`.
+Two scheduled tasks run on macOS via launchd.
 
 ### Task Configuration
 
-| Task | Schedule | Script | Log File |
+| Task | Schedule (Pacific) | Script | Log File |
 |------|----------|--------|----------|
-| Daily Scanner | 6:30 AM Mon-Fri | `scripts/daily_run.py` | `logs/daily.error.log` |
-| Position Monitor | Every 60 seconds | `scripts/monitor_positions.py` | `logs/monitor.error.log` |
+| Market Scanner | 6:30 AM, 10:00 AM, 1:05 PM Mon-Fri | `scripts/daily_run.py` | `logs/daily.log` |
+| Position Monitor | Every 60 seconds (continuous) | `scripts/monitor_positions.py` | `logs/monitor.error.log` |
+
+**Scanner runs 3 times per day**:
+- 6:30 AM PT (9:30 AM ET) - Market open
+- 10:00 AM PT (1:00 PM ET) - Mid-day
+- 1:05 PM PT (4:05 PM ET) - After close ← **catches end-of-day breakouts**
+
+Duplicate signals are automatically deduplicated - only one alert per symbol/direction/system per day.
 
 ### Plist Locations
 ```
