@@ -131,8 +131,12 @@ async def check_position(symbol: str, quantity: int, avg_cost: float) -> dict:
 
         # Create position object
         entry_price = Decimal(str(avg_cost))
-        stop_price = entry_price - (2 * n_value)
         direction = Direction.LONG if quantity > 0 else Direction.SHORT
+        # Stop is 2N from entry: below for LONG, above for SHORT
+        if direction == Direction.LONG:
+            stop_price = entry_price - (2 * n_value)
+        else:
+            stop_price = entry_price + (2 * n_value)
 
         pyramid = PyramidLevel(
             level=1,
