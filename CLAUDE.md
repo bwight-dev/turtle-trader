@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Turtle Trading Bot is a Python algorithmic trading system implementing classic Turtle Trading rules with modern adaptations. The project is currently in **active implementation** phase.
 
-## Implementation Progress (as of 2026-01-29)
+## Implementation Progress (as of 2026-02-04)
 
-**454 tests passing** (451 unit, 3 integration for alerts)
+**454 tests passing** (451 unit + 3 integration for alerts, 2 skipped)
 
 | Phase | Milestones | Status |
 |-------|------------|--------|
@@ -26,7 +26,10 @@ Turtle Trading Bot is a Python algorithmic trading system implementing classic T
 - **Paper Account**: DUP318628 (IBKR)
 - **Position Monitor**: Running via launchd (every 60s)
 - **Daily Scanner**: Scheduled for 6:30 AM Mon-Fri
-- **Test Position**: EFA long (134 shares @ $101.56)
+- **Discord Alerts**: Webhook notifications for signals
+- **Open Positions** (as of 2026-02-04):
+  - QQQ SHORT: 26 shares, stop @ $625.17 (pending fill)
+  - XLE LONG: 243 shares, stop @ $50.75 (pending fill)
 
 ### Completed Components:
 - **M1**: Project setup + Neon PostgreSQL connection
@@ -63,9 +66,24 @@ Turtle Trading Bot is a Python algorithmic trading system implementing classic T
 - **Interactive Brokers** (ib_insync) - primary data source and execution
 - **Yahoo Finance** (yfinance) - backup data source with automatic failover
 - **Neon PostgreSQL** (cloud) - trade history, audit logs, N value persistence
+- **Discord Webhooks** - real-time signal notifications
 - **In-memory caching** (Redis deferred) - real-time price cache
 - **LangGraph** - workflow orchestration from the start
 - **Docker on Unraid** - deployment target
+
+## Discord Notifications
+
+Signals are sent to Discord via webhook when detected by the daily scanner.
+
+**Setup:**
+```bash
+# Add to .env
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR_WEBHOOK_URL
+```
+
+**Implementation:** `src/infrastructure/discord.py`
+- Sends formatted embeds for ENTRY_SIGNAL alerts
+- Called from `AlertLogger.log_signal()` in `src/application/commands/log_alert.py`
 
 ## Database
 
@@ -217,6 +235,7 @@ src/
 └── infrastructure/    # Frameworks & drivers (outermost)
     ├── database.py    # Neon connection pool
     ├── config.py      # Environment configuration
+    ├── discord.py     # Discord webhook notifications
     └── logging.py     # Structured logging
 ```
 
@@ -278,7 +297,7 @@ Market Data (IBKR primary, Yahoo backup) → N/Donchian calculations → Strateg
 - **Paper Trading**: Port 7497, Account DUP318628
 - **Live Trading**: Port 7496
 - **Gateway**: Port 4002 (paper) / 4001 (live)
-- TWS runs on Mac Mini (local)
+- TWS/Gateway runs on Mac Mini (local)
 
 ### Keeping IBKR Connected
 
@@ -286,8 +305,9 @@ TWS disconnects for several reasons. Here's how to prevent issues:
 
 **1. Use IB Gateway instead of TWS** (Recommended)
 - IB Gateway is headless and more stable than TWS
-- Download from IBKR website → "IB Gateway" (not TWS)
+- **Download:** https://www.interactivebrokers.com/en/trading/ibgateway-stable.php
 - Same ports, less resource usage, fewer disconnects
+- Configure: Settings → API → Enable Socket Clients, port 7497
 
 **2. TWS Auto-Restart Settings** (if using TWS)
 In TWS: Edit → Global Configuration → API → Settings:
@@ -360,9 +380,19 @@ Implementation plans in `docs/plans/`:
 - `2026-01-27-architecture-review.md` - DDD/Clean Architecture analysis
 - `2026-01-29-alerts-logging-design.md` - Dashboard alerts/positions logging (implemented)
 
+## Recent Bug Fixes (2026-02-04)
+
+| Bug | Fix | File |
+|-----|-----|------|
+| Donchian channels included current bar | Added `exclude_current=True` for live signal detection | `channels.py` |
+| Signals missed due to channel bug | Fixed - QQQ SHORT, XLE LONG detected | `daily_run.py`, `monitor_positions.py` |
+| S2 redundant when S1 triggers same direction | S1 now suppresses S2 for same direction | `signal_detector.py` |
+| No Discord notifications | Added webhook integration | `discord.py`, `log_alert.py` |
+
 ## Validation Criteria
 
 - N calculations must match TOS ATR(20, WILDERS) within 0.5%
-- Donchian channels must match TradingView exactly
+- Donchian channels must match TradingView exactly (excluding current bar)
 - Signal generation must match manual tracking
-- Pyramid triggers at correct +1N levels
+- Pyramid triggers at correct +½N levels
+- S1 takes priority over S2 when both trigger same direction

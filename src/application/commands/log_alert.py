@@ -10,6 +10,7 @@ from decimal import Decimal
 from src.domain.interfaces.repositories import AlertRepository, OpenPositionRepository
 from src.domain.models.alert import Alert, AlertType, OpenPositionSnapshot
 from src.domain.models.enums import Direction, System
+from src.infrastructure.discord import send_discord_alert
 
 # Thresholds for significant change detection
 PRICE_CHANGE_THRESHOLD = Decimal("0.005")  # 0.5%
@@ -109,6 +110,17 @@ class AlertLogger:
             details=details or {},
         )
         await self._alert_repo.save(alert)
+
+        # Send Discord notification
+        await send_discord_alert(
+            symbol=symbol,
+            alert_type=AlertType.ENTRY_SIGNAL.value,
+            direction=direction.value,
+            system=system.value,
+            price=price,
+            details=details,
+        )
+
         return alert
 
     async def log_position_opened(

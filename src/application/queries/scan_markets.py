@@ -150,8 +150,8 @@ class MarketScanner:
             # Calculate N (ATR with Wilder's smoothing)
             n_value = calculate_n(bars[-20:], period=20, prev_n=prev_n)
 
-            # Calculate Donchian channels
-            channels = calculate_all_channels(bars)
+            # Calculate Donchian channels (exclude current bar for breakout detection)
+            channels = calculate_all_channels(bars, exclude_current=True)
 
             dc_20 = channels.get("dc_20")
             dc_55 = channels.get("dc_55")

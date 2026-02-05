@@ -163,8 +163,12 @@ class TestS2SignalDetection:
 class TestDetectAllSignals:
     """Tests for detecting all signals at once."""
 
-    def test_both_breakouts_returns_both_signals(self, detector, donchian_20, donchian_55):
-        """When price breaks both channels, return both signals."""
+    def test_both_breakouts_s1_takes_priority(self, detector, donchian_20, donchian_55):
+        """When price breaks both channels in same direction, S1 takes priority.
+
+        S2 is suppressed when S1 triggers in the same direction to avoid
+        redundant entries.
+        """
         # Price above both 20-day (2850) and 55-day (2900) highs
         signals = detector.detect_all_signals(
             symbol="/MGC",
@@ -173,9 +177,9 @@ class TestDetectAllSignals:
             donchian_55=donchian_55,
         )
 
-        assert len(signals) == 2
-        assert signals[0].system == System.S1  # S1 first
-        assert signals[1].system == System.S2
+        # Only S1 returned - S2 suppressed (same direction = redundant)
+        assert len(signals) == 1
+        assert signals[0].system == System.S1
 
     def test_only_s1_breakout(self, detector, donchian_20, donchian_55):
         """When price only breaks 20-day, return only S1 signal."""
@@ -231,8 +235,8 @@ class TestDetectAllSignals:
 
         assert len(signals) == 0
 
-    def test_short_breakouts(self, detector, donchian_20, donchian_55):
-        """Test short signals when breaking below both channels."""
+    def test_short_breakouts_s1_takes_priority(self, detector, donchian_20, donchian_55):
+        """Test short signals - S1 takes priority over S2."""
         # Price below both 20-day (2700) and 55-day (2600) lows
         signals = detector.detect_all_signals(
             symbol="/MGC",
@@ -241,8 +245,10 @@ class TestDetectAllSignals:
             donchian_55=donchian_55,
         )
 
-        assert len(signals) == 2
-        assert all(s.direction == Direction.SHORT for s in signals)
+        # Only S1 SHORT returned - S2 suppressed (same direction)
+        assert len(signals) == 1
+        assert signals[0].direction == Direction.SHORT
+        assert signals[0].system == System.S1
 
 
 class TestIsInsideChannel:

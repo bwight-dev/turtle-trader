@@ -23,6 +23,7 @@ from src.domain.rules import S1_ENTRY_PERIOD, S1_EXIT_PERIOD, S2_ENTRY_PERIOD, S
 def calculate_donchian(
     bars: list[Bar],
     period: int,
+    exclude_current: bool = False,
 ) -> DonchianChannel:
     """Calculate Donchian Channel for a given period.
 
@@ -32,6 +33,9 @@ def calculate_donchian(
     Args:
         bars: List of Bar objects, oldest first
         period: Lookback period (10, 20, or 55 typically)
+        exclude_current: If True, exclude the last bar from calculation.
+            Use True for live signal detection (compare today's price vs prior channel).
+            Use False for historical analysis.
 
     Returns:
         DonchianChannel with upper and lower values
@@ -39,11 +43,15 @@ def calculate_donchian(
     Raises:
         ValueError: If insufficient bars for calculation
     """
-    if len(bars) < period:
-        raise ValueError(f"Need at least {period} bars, got {len(bars)}")
+    min_bars = period + 1 if exclude_current else period
+    if len(bars) < min_bars:
+        raise ValueError(f"Need at least {min_bars} bars, got {len(bars)}")
 
-    # Use last `period` bars
-    lookback_bars = bars[-period:]
+    # Use prior `period` bars (excluding current) or last `period` bars
+    if exclude_current:
+        lookback_bars = bars[-(period + 1) : -1]
+    else:
+        lookback_bars = bars[-period:]
 
     upper = max(bar.high for bar in lookback_bars)
     lower = min(bar.low for bar in lookback_bars)
@@ -58,6 +66,7 @@ def calculate_donchian(
 
 def calculate_all_channels(
     bars: list[Bar],
+    exclude_current: bool = False,
 ) -> dict[str, DonchianChannel]:
     """Calculate all Donchian channels needed for Turtle Trading.
 
@@ -67,7 +76,9 @@ def calculate_all_channels(
     - 55-day (S2 entry)
 
     Args:
-        bars: List of Bar objects, oldest first (need at least 55)
+        bars: List of Bar objects, oldest first (need at least 55, or 56 if exclude_current)
+        exclude_current: If True, exclude the last bar from calculation.
+            Use True for live signal detection (compare today's price vs prior channel).
 
     Returns:
         Dict with keys 'dc_10', 'dc_20', 'dc_55'
@@ -76,13 +87,15 @@ def calculate_all_channels(
         ValueError: If insufficient bars
     """
     min_required = max(S1_EXIT_PERIOD, S1_ENTRY_PERIOD, S2_ENTRY_PERIOD)
+    if exclude_current:
+        min_required += 1
     if len(bars) < min_required:
         raise ValueError(f"Need at least {min_required} bars, got {len(bars)}")
 
     return {
-        "dc_10": calculate_donchian(bars, S1_EXIT_PERIOD),
-        "dc_20": calculate_donchian(bars, S1_ENTRY_PERIOD),
-        "dc_55": calculate_donchian(bars, S2_ENTRY_PERIOD),
+        "dc_10": calculate_donchian(bars, S1_EXIT_PERIOD, exclude_current),
+        "dc_20": calculate_donchian(bars, S1_ENTRY_PERIOD, exclude_current),
+        "dc_55": calculate_donchian(bars, S2_ENTRY_PERIOD, exclude_current),
     }
 
 

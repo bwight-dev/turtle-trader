@@ -14,9 +14,11 @@ from decimal import Decimal
 from pathlib import Path
 
 import yfinance as yf
+from dotenv import load_dotenv
 
-# Add src to path
+# Add src to path and load environment
 sys.path.insert(0, str(Path(__file__).parent.parent))
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 from src.adapters.backtesting.data_loader import SMALL_ACCOUNT_ETF_UNIVERSE
 from src.adapters.repositories.alert_repository import PostgresAlertRepository
@@ -123,8 +125,8 @@ async def scan_symbol(symbol: str, detector: SignalDetector) -> dict:
         n_result = calculate_n(bars[-20:], period=20)
         result["n_value"] = float(n_result.value)
 
-        # Calculate Donchian channels
-        channels = calculate_all_channels(bars)
+        # Calculate Donchian channels (exclude current bar for breakout detection)
+        channels = calculate_all_channels(bars, exclude_current=True)
         dc20 = channels.get("dc_20")
         dc55 = channels.get("dc_55")
 
@@ -145,10 +147,10 @@ async def scan_symbol(symbol: str, detector: SignalDetector) -> dict:
             )
             result["signals"] = [
                 {
-                    "type": s.signal_type.value,
+                    "type": "breakout",
                     "system": s.system.value,
                     "direction": s.direction.value,
-                    "price": float(s.price),
+                    "price": float(s.breakout_price),
                     "channel": float(s.channel_value),
                 }
                 for s in signals

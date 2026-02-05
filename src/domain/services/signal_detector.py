@@ -117,7 +117,8 @@ class SignalDetector:
         """Detect all possible signals for a market.
 
         Returns signals in priority order (S1 first, then S2).
-        A market can have both S1 and S2 signals if price breaks both channels.
+        S1 takes priority - if S1 triggers, S2 is suppressed for the same direction
+        (since they would be redundant entries).
 
         Args:
             symbol: Market symbol
@@ -136,7 +137,10 @@ class SignalDetector:
 
         s2_signal = self.detect_s2_signal(symbol, current_price, donchian_55)
         if s2_signal:
-            signals.append(s2_signal)
+            # Suppress S2 if S1 already triggered in the same direction
+            # (S1 takes priority, S2 would be redundant)
+            if not s1_signal or s1_signal.direction != s2_signal.direction:
+                signals.append(s2_signal)
 
         return signals
 

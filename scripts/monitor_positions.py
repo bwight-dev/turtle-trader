@@ -126,8 +126,8 @@ async def check_position(symbol: str, quantity: int, avg_cost: float) -> dict:
         # Calculate N and channels
         n_value_obj = calculate_n(bars)
         n_value = n_value_obj.value
-        dc10 = calculate_donchian(bars, period=10)
-        dc20 = calculate_donchian(bars, period=20)
+        dc10 = calculate_donchian(bars, period=10, exclude_current=True)
+        dc20 = calculate_donchian(bars, period=20, exclude_current=True)
 
         # Create position object
         entry_price = Decimal(str(avg_cost))
