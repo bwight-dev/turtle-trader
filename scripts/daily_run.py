@@ -1,34 +1,53 @@
 #!/usr/bin/env python3
-"""Daily market scanner - checks for Turtle Trading signals.
+"""Daily market scanner - checks for Turtle Trading signals with optional auto-execution.
 
 Usage:
-    python scripts/daily_run.py
-    python scripts/daily_run.py --symbols SPY QQQ GLD
-    python scripts/daily_run.py --from-db
+    python scripts/daily_run.py                          # Detection only (current behavior)
+    python scripts/daily_run.py --symbols SPY QQQ GLD    # Scan specific symbols
+    python scripts/daily_run.py --auto-execute --dry-run # Show what would execute
+    python scripts/daily_run.py --auto-execute           # Execute entry orders
 """
 
 import asyncio
+import logging
 import sys
-from datetime import date, timedelta
-from decimal import Decimal
+from datetime import date, datetime, timedelta
+from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 
 import yfinance as yf
 from dotenv import load_dotenv
+from ib_insync import IB, Stock, MarketOrder, StopOrder
 
 # Add src to path and load environment
 sys.path.insert(0, str(Path(__file__).parent.parent))
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 from src.adapters.backtesting.data_loader import SMALL_ACCOUNT_ETF_UNIVERSE
+from src.adapters.mappers.correlation_mapper import get_etf_correlation_group
 from src.adapters.repositories.alert_repository import PostgresAlertRepository
 from src.adapters.repositories.position_repository import PostgresOpenPositionRepository
+from src.adapters.repositories.trade_repository import PostgresTradeRepository
 from src.application.commands.log_alert import AlertLogger
 from src.domain.models.enums import Direction, System
-from src.domain.models.market import Bar
+from src.domain.models.market import Bar, NValue
+from src.domain.models.portfolio import Portfolio
+from src.domain.models.position import Position, PyramidLevel
+from src.domain.models.signal import Signal
+from src.domain.rules import RISK_PER_TRADE
 from src.domain.services.channels import calculate_all_channels
+from src.domain.services.limit_checker import LimitChecker
+from src.domain.services.s1_filter import S1Filter
 from src.domain.services.signal_detector import SignalDetector
 from src.domain.services.volatility import calculate_n
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 
 # Use the validated 15-ETF small account universe
@@ -84,6 +103,198 @@ def fetch_current_price(symbol: str) -> Decimal | None:
     except Exception:
         pass
     return None
+
+
+# =============================================================================
+# AUTO-EXECUTION FUNCTIONS
+# =============================================================================
+
+
+async def get_account_equity(ib: IB) -> Decimal:
+    """Get account equity from IBKR."""
+    account_values = await ib.accountSummaryAsync()
+    for av in account_values:
+        if av.tag == "NetLiquidation":
+            return Decimal(str(av.value))
+    raise RuntimeError("Could not get account equity")
+
+
+def calculate_unit_size(equity: Decimal, n_value: Decimal) -> int:
+    """Calculate unit size for stocks (point_value = 1).
+
+    Rule 4: Unit = (Risk × Equity) / (N × PointValue)
+    For stocks, point_value = 1, so Unit = (0.005 × Equity) / N
+    """
+    risk_amount = equity * RISK_PER_TRADE
+    if n_value <= 0:
+        return 0
+    raw_size = risk_amount / n_value
+    return int(raw_size.quantize(Decimal("1"), rounding=ROUND_DOWN))
+
+
+async def execute_entry(
+    ib: IB,
+    symbol: str,
+    direction: Direction,
+    system: System,
+    current_price: Decimal,
+    n_value: Decimal,
+    alert_logger: AlertLogger,
+) -> dict:
+    """Execute an entry order: buy shares, place stop.
+
+    Args:
+        ib: IBKR connection
+        symbol: Stock symbol (e.g., 'QQQ')
+        direction: LONG or SHORT
+        system: S1 or S2
+        current_price: Current market price
+        n_value: Current N (ATR) value
+        alert_logger: Alert logger for dashboard
+
+    Returns:
+        Dict with execution details
+    """
+    # Get account equity
+    try:
+        equity = await get_account_equity(ib)
+    except Exception as e:
+        return {"success": False, "reason": f"Could not get account equity: {e}"}
+
+    # Calculate unit size (Rule 4)
+    unit_size = calculate_unit_size(equity, n_value)
+
+    if unit_size < 1:
+        return {"success": False, "reason": f"Unit size too small: {unit_size}"}
+
+    # Create contract
+    contract = Stock(symbol, "SMART", "USD")
+    await ib.qualifyContractsAsync(contract)
+
+    # Determine order action
+    action = "BUY" if direction == Direction.LONG else "SELL"
+
+    logger.info(f"  {symbol}: EXECUTING ENTRY - {action} {unit_size} shares at market")
+
+    # Place market order
+    order = MarketOrder(action, unit_size)
+    trade = ib.placeOrder(contract, order)
+
+    # Wait for fill (30s timeout)
+    timeout = 30
+    start = asyncio.get_event_loop().time()
+    while trade.orderStatus.status not in ("Filled", "Cancelled", "Inactive"):
+        await asyncio.sleep(0.5)
+        if asyncio.get_event_loop().time() - start > timeout:
+            logger.error(f"  {symbol}: Order timeout after {timeout}s")
+            return {"success": False, "reason": "Order timeout"}
+
+    if trade.orderStatus.status != "Filled":
+        logger.error(f"  {symbol}: Order not filled: {trade.orderStatus.status}")
+        return {"success": False, "reason": f"Order {trade.orderStatus.status}"}
+
+    fill_price = Decimal(str(trade.orderStatus.avgFillPrice))
+    filled_qty = int(trade.orderStatus.filled)
+    logger.info(f"  {symbol}: FILLED {filled_qty} shares @ ${fill_price:.2f}")
+
+    # Calculate stop price (2N from fill price)
+    if direction == Direction.LONG:
+        stop_price = fill_price - (2 * n_value)
+    else:
+        stop_price = fill_price + (2 * n_value)
+
+    # Place GTC stop order
+    stop_action = "SELL" if direction == Direction.LONG else "BUY"
+    stop_order = StopOrder(stop_action, filled_qty, float(stop_price))
+    stop_order.tif = "GTC"
+    stop_order.outsideRth = True
+    ib.placeOrder(contract, stop_order)
+
+    logger.info(f"  {symbol}: STOP placed @ ${stop_price:.2f}")
+
+    # Log POSITION_OPENED to alerts database
+    try:
+        await alert_logger.log_position_opened(
+            symbol=symbol,
+            direction=direction,
+            system=system,
+            entry_price=fill_price,
+            contracts=filled_qty,
+            stop_price=stop_price,
+            n_value=n_value,
+        )
+    except Exception as e:
+        logger.error(f"  {symbol}: Failed to log alert: {e}")
+
+    return {
+        "success": True,
+        "filled_qty": filled_qty,
+        "fill_price": float(fill_price),
+        "stop_price": float(stop_price),
+        "unit_size": unit_size,
+    }
+
+
+async def build_portfolio_from_ibkr(ib: IB) -> Portfolio:
+    """Build portfolio from IBKR positions for limit checking."""
+    positions_dict = {}
+
+    for pos in ib.positions():
+        if pos.position == 0:
+            continue
+
+        symbol = pos.contract.symbol
+        quantity = int(pos.position)
+        avg_cost = Decimal(str(pos.avgCost))
+
+        direction = Direction.LONG if quantity > 0 else Direction.SHORT
+        correlation_group = get_etf_correlation_group(symbol)
+
+        # Create minimal position for limit checking
+        pyramid = PyramidLevel(
+            level=1,
+            entry_price=avg_cost,
+            contracts=abs(quantity),
+            n_at_entry=Decimal("1"),  # Placeholder
+        )
+
+        n_value = NValue(
+            value=Decimal("1"),
+            calculated_at=datetime.now(),
+            symbol=symbol,
+        )
+
+        position = Position(
+            symbol=symbol,
+            direction=direction,
+            system=System.S1,  # Default
+            correlation_group=correlation_group,
+            pyramid_levels=(pyramid,),
+            current_stop=Decimal("0"),  # Unknown
+            initial_entry_price=avg_cost,
+            initial_n=n_value,
+        )
+        positions_dict[symbol] = position
+
+    return Portfolio(positions=positions_dict)
+
+
+def check_entry_allowed(
+    portfolio: Portfolio,
+    symbol: str,
+    limit_checker: LimitChecker,
+) -> tuple[bool, str]:
+    """Check if new entry is allowed by position limits."""
+    correlation_group = get_etf_correlation_group(symbol)
+
+    result = limit_checker.can_add_position(
+        portfolio=portfolio,
+        symbol=symbol,
+        units_to_add=1,
+        correlation_group=correlation_group,
+    )
+
+    return result.allowed, result.reason
 
 
 async def scan_symbol(symbol: str, detector: SignalDetector) -> dict:
@@ -161,12 +372,26 @@ async def scan_symbol(symbol: str, detector: SignalDetector) -> dict:
     return result
 
 
-async def main(symbols: list[str] | None = None):
-    """Run the daily market scanner."""
+async def main(
+    symbols: list[str] | None = None,
+    auto_execute: bool = False,
+    dry_run: bool = False,
+):
+    """Run the daily market scanner with optional auto-execution.
+
+    Args:
+        symbols: Symbols to scan (default: SMALL_ACCOUNT_ETF_UNIVERSE)
+        auto_execute: If True, execute orders for actionable signals
+        dry_run: If True, show what would execute but don't place orders
+    """
     universe = symbols or DEFAULT_UNIVERSE
 
     print("=" * 60)
     print(f"TURTLE TRADING SIGNAL SCANNER - {date.today()}")
+    if auto_execute:
+        print(">>> AUTO-EXECUTION ENABLED <<<")
+    if dry_run:
+        print(">>> DRY RUN MODE - No orders will be executed <<<")
     print("=" * 60)
     print(f"\nScanning {len(universe)} markets...")
     print()
@@ -174,13 +399,42 @@ async def main(symbols: list[str] | None = None):
     # Initialize repositories and logger
     alert_repo = PostgresAlertRepository()
     position_repo = PostgresOpenPositionRepository()
+    trade_repo = PostgresTradeRepository()
     alert_logger = AlertLogger(alert_repo, position_repo)
 
-    # Initialize signal detector
+    # Initialize signal detector and S1 filter
     detector = SignalDetector()
+    s1_filter = S1Filter(trade_repo)
+
+    # Initialize limit checker
+    limit_checker = LimitChecker()
+
+    # Connect to IBKR if auto-executing
+    ib = None
+    portfolio = Portfolio()
+    existing_symbols = set()
+
+    if auto_execute:
+        ib = IB()
+        try:
+            await ib.connectAsync("127.0.0.1", 7497, clientId=99)
+            logger.info(f"Connected to IBKR: {ib.managedAccounts()}")
+
+            # Build portfolio from current positions
+            portfolio = await build_portfolio_from_ibkr(ib)
+            existing_symbols = set(portfolio.positions.keys())
+            logger.info(f"Loaded {len(portfolio.positions)} existing positions: {existing_symbols}")
+
+        except Exception as e:
+            logger.error(f"Failed to connect to IBKR: {e}")
+            logger.error("Auto-execution disabled, running in detection-only mode")
+            auto_execute = False
+            ib = None
 
     # Scan all symbols
     results = []
+    signals_to_execute = []
+
     for symbol in universe:
         print(f"  Scanning {symbol}...", end=" ", flush=True)
         result = await scan_symbol(symbol, detector)
@@ -188,26 +442,103 @@ async def main(symbols: list[str] | None = None):
 
         if result["error"]:
             print(f"ERROR: {result['error']}")
-        elif result["signals"]:
-            print(f"SIGNAL DETECTED!")
-            # Log each signal to database
-            for sig in result["signals"]:
-                try:
-                    await alert_logger.log_signal(
-                        symbol=symbol,
-                        direction=Direction(sig["direction"]),
-                        system=System(sig["system"]),
-                        price=Decimal(str(sig["price"])),
-                        details={
-                            "signal_type": sig["type"],
-                            "channel_value": sig["channel"],
-                            "n_value": result["n_value"],
-                        },
-                    )
-                except Exception as e:
-                    print(f"    (alert log failed: {e})")
-        else:
+            continue
+
+        if not result["signals"]:
             print("no signal")
+            continue
+
+        print("SIGNAL DETECTED!")
+
+        # Process each signal
+        for sig in result["signals"]:
+            direction = Direction(sig["direction"])
+            system = System(sig["system"])
+
+            # Apply S1 filter for S1 signals (Rule 7)
+            if system == System.S1:
+                signal_obj = Signal(
+                    symbol=symbol,
+                    direction=direction,
+                    system=system,
+                    breakout_price=Decimal(str(sig["price"])),
+                    channel_value=Decimal(str(sig["channel"])),
+                )
+                filter_result = await s1_filter.should_take_signal(signal_obj)
+
+                if not filter_result.take_signal:
+                    print(f"    {system.value} {direction.value.upper()} FILTERED: {filter_result.reason}")
+                    continue
+
+            # Check if we already have a position
+            if symbol in existing_symbols:
+                print(f"    {system.value} {direction.value.upper()} SKIPPED: Already have position in {symbol}")
+                continue
+
+            # Check position limits
+            if auto_execute:
+                allowed, reason = check_entry_allowed(portfolio, symbol, limit_checker)
+                if not allowed:
+                    print(f"    {system.value} {direction.value.upper()} LIMIT EXCEEDED: {reason}")
+                    continue
+
+            # Log signal to database (always, even if not executing)
+            try:
+                await alert_logger.log_signal(
+                    symbol=symbol,
+                    direction=direction,
+                    system=system,
+                    price=Decimal(str(sig["price"])),
+                    details={
+                        "signal_type": sig["type"],
+                        "channel_value": sig["channel"],
+                        "n_value": result["n_value"],
+                    },
+                )
+            except Exception as e:
+                print(f"    (alert log failed: {e})")
+
+            print(f"    {system.value} {direction.value.upper()} -> ACTIONABLE")
+
+            # Queue for execution if auto-execute enabled
+            if auto_execute:
+                signals_to_execute.append({
+                    "symbol": symbol,
+                    "direction": direction,
+                    "system": system,
+                    "price": Decimal(str(sig["price"])),
+                    "n_value": Decimal(str(result["n_value"])),
+                })
+
+    # Execute queued signals
+    executions = []
+    if signals_to_execute and ib:
+        print("\n" + "=" * 60)
+        print("EXECUTING ENTRIES")
+        print("=" * 60)
+
+        for sig in signals_to_execute:
+            if dry_run:
+                print(f"  {sig['symbol']}: WOULD EXECUTE {sig['direction'].value.upper()} "
+                      f"(N={sig['n_value']:.2f})")
+                executions.append({"signal": sig, "result": {"success": False, "reason": "Dry run"}})
+            else:
+                exec_result = await execute_entry(
+                    ib=ib,
+                    symbol=sig["symbol"],
+                    direction=sig["direction"],
+                    system=sig["system"],
+                    current_price=sig["price"],
+                    n_value=sig["n_value"],
+                    alert_logger=alert_logger,
+                )
+                executions.append({"signal": sig, "result": exec_result})
+
+                if exec_result["success"]:
+                    print(f"  {sig['symbol']}: SUCCESS - {exec_result['filled_qty']} shares "
+                          f"@ ${exec_result['fill_price']:.2f}, stop @ ${exec_result['stop_price']:.2f}")
+                else:
+                    print(f"  {sig['symbol']}: FAILED - {exec_result['reason']}")
 
     # Summary
     print("\n" + "=" * 60)
@@ -232,6 +563,18 @@ async def main(symbols: list[str] | None = None):
         for r in errors:
             print(f"  {r['symbol']}: {r['error']}")
 
+    # Execution summary
+    if executions:
+        successful = [e for e in executions if e["result"].get("success")]
+        failed = [e for e in executions if not e["result"].get("success") and not dry_run]
+        print(f"\nEXECUTION SUMMARY:")
+        print(f"  Queued: {len(signals_to_execute)}")
+        if dry_run:
+            print(f"  Would execute: {len(signals_to_execute)} (dry run)")
+        else:
+            print(f"  Successful: {len(successful)}")
+            print(f"  Failed: {len(failed)}")
+
     # Print levels for reference
     print("\n" + "-" * 60)
     print("CHANNEL LEVELS (for manual verification)")
@@ -252,6 +595,12 @@ async def main(symbols: list[str] | None = None):
             )
 
     print()
+
+    # Disconnect from IBKR
+    if ib and ib.isConnected():
+        ib.disconnect()
+        logger.info("Disconnected from IBKR")
+
     return signals_found
 
 
@@ -260,6 +609,16 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Turtle Trading Signal Scanner")
     parser.add_argument("--symbols", nargs="+", help="Symbols to scan")
+    parser.add_argument(
+        "--auto-execute",
+        action="store_true",
+        help="Automatically execute orders for actionable signals",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would execute without placing orders (requires --auto-execute)",
+    )
     args = parser.parse_args()
 
-    asyncio.run(main(args.symbols))
+    asyncio.run(main(args.symbols, auto_execute=args.auto_execute, dry_run=args.dry_run))

@@ -441,11 +441,14 @@ class IBKRBroker(Broker):
         if not self.is_connected:
             raise ConnectionError("Not connected to IBKR")
 
-        orders = self._ib.openOrders()
+        # Use openTrades() which returns Trade objects with both .order and .contract
+        trades = self._ib.openTrades()
         result = []
 
-        for order in orders:
-            order_symbol = self._to_internal_symbol(order.contract)
+        for trade in trades:
+            order = trade.order
+            contract = trade.contract
+            order_symbol = self._to_internal_symbol(contract)
             if symbol and order_symbol != symbol:
                 continue
 
@@ -464,6 +467,9 @@ class IBKRBroker(Broker):
                     order_type = "LMT"
                     limit_price = Decimal(str(order.lmtPrice)) if order.lmtPrice else None
 
+            # Get status from trade.orderStatus
+            status = trade.orderStatus.status if trade.orderStatus else "Unknown"
+
             result.append(
                 OpenOrder(
                     order_id=str(order.orderId),
@@ -473,7 +479,7 @@ class IBKRBroker(Broker):
                     order_type=order_type,
                     stop_price=stop_price,
                     limit_price=limit_price,
-                    status=order.status if hasattr(order, "status") else "Unknown",
+                    status=status,
                     parent_id=str(order.parentId) if order.parentId else None,
                 )
             )

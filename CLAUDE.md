@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Turtle Trading Bot is a Python algorithmic trading system implementing classic Turtle Trading rules with modern adaptations. The project is currently in **active implementation** phase.
 
-## Implementation Progress (as of 2026-02-04)
+## Implementation Progress (as of 2026-02-09)
 
-**454 tests passing** (451 unit + 3 integration for alerts, 2 skipped)
+**499 tests passing** (451 unit + 48 integration, 4 skipped)
 
 | Phase | Milestones | Status |
 |-------|------------|--------|
@@ -146,6 +146,11 @@ python scripts/status.py
 pytest tests/unit/
 pytest tests/integration/
 pytest tests/backtest/
+
+# Note: When position monitor is running, some IBKR integration tests
+# will show "client id already in use" errors - these are not real failures.
+# Stop the monitor first for clean test runs:
+#   launchctl unload ~/Library/LaunchAgents/com.turtle.monitor.plist
 ```
 
 ## Scheduled Tasks (launchd)
@@ -299,6 +304,13 @@ Market Data (IBKR primary, Yahoo backup) → N/Donchian calculations → Strateg
 - **Gateway**: Port 4002 (paper) / 4001 (live)
 - TWS/Gateway runs on Mac Mini (local)
 
+### ib_insync API Notes
+
+**Important:** `openOrders()` vs `openTrades()`:
+- `ib.openOrders()` returns `Order` objects (no `.contract` attribute)
+- `ib.openTrades()` returns `Trade` objects with both `.order` and `.contract`
+- Always use `openTrades()` when you need contract info for open orders
+
 ### Keeping IBKR Connected
 
 TWS disconnects for several reasons. Here's how to prevent issues:
@@ -380,14 +392,15 @@ Implementation plans in `docs/plans/`:
 - `2026-01-27-architecture-review.md` - DDD/Clean Architecture analysis
 - `2026-01-29-alerts-logging-design.md` - Dashboard alerts/positions logging (implemented)
 
-## Recent Bug Fixes (2026-02-04)
+## Recent Bug Fixes
 
-| Bug | Fix | File |
-|-----|-----|------|
-| Donchian channels included current bar | Added `exclude_current=True` for live signal detection | `channels.py` |
-| Signals missed due to channel bug | Fixed - QQQ SHORT, XLE LONG detected | `daily_run.py`, `monitor_positions.py` |
-| S2 redundant when S1 triggers same direction | S1 now suppresses S2 for same direction | `signal_detector.py` |
-| No Discord notifications | Added webhook integration | `discord.py`, `log_alert.py` |
+| Date | Bug | Fix | File |
+|------|-----|-----|------|
+| 2026-02-09 | `get_open_orders()` failed with AttributeError | Changed from `openOrders()` to `openTrades()` - Order objects don't have `.contract`, Trade objects do | `ibkr_broker.py` |
+| 2026-02-04 | Donchian channels included current bar | Added `exclude_current=True` for live signal detection | `channels.py` |
+| 2026-02-04 | Signals missed due to channel bug | Fixed - QQQ SHORT, XLE LONG detected | `daily_run.py`, `monitor_positions.py` |
+| 2026-02-04 | S2 redundant when S1 triggers same direction | S1 now suppresses S2 for same direction | `signal_detector.py` |
+| 2026-02-04 | No Discord notifications | Added webhook integration | `discord.py`, `log_alert.py` |
 
 ## Validation Criteria
 
