@@ -317,6 +317,11 @@ Market Data (IBKR primary, Yahoo backup) → N/Donchian calculations → Strateg
 - Must use `await ib.reqAllOpenOrdersAsync()` then `ib.trades()` to see ALL orders
 - Failure to do this causes duplicate orders when checking for existing stops
 
+**Best Practice:** Use bracket orders for entries with stops:
+- `ib.bracketOrder()` links parent order + stop loss + optional take profit
+- Stop only activates when parent fills - no orphan entries without stops
+- Critical for after-hours orders that queue until market open
+
 ### Keeping IBKR Connected
 
 TWS disconnects for several reasons. Here's how to prevent issues:
@@ -402,6 +407,7 @@ Implementation plans in `docs/plans/`:
 
 | Date | Bug | Fix | File |
 |------|-----|-----|------|
+| 2026-02-10 | Entry orders placed without stops after-hours | Use IBKR bracket orders to link entry + stop - stop activates when entry fills | `daily_run.py` |
 | 2026-02-10 | Duplicate stop orders created after-hours | Use `reqAllOpenOrdersAsync()` + `ib.trades()` instead of `openTrades()` to see PreSubmitted orders | `monitor_positions.py`, `daily_run.py` |
 | 2026-02-09 | `get_open_orders()` failed with AttributeError | Changed from `openOrders()` to `openTrades()` - Order objects don't have `.contract`, Trade objects do | `ibkr_broker.py` |
 | 2026-02-04 | Donchian channels included current bar | Added `exclude_current=True` for live signal detection | `channels.py` |

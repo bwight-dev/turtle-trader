@@ -183,61 +183,102 @@ async def execute_entry(
 
     # Determine order action
     action = "BUY" if direction == Direction.LONG else "SELL"
+    stop_action = "SELL" if direction == Direction.LONG else "BUY"
+
+    # Calculate stop price (2N from current price - will be recalculated on fill)
+    # Using current_price as estimate since we don't have fill price yet
+    if direction == Direction.LONG:
+        stop_price = float(current_price - (2 * n_value))
+    else:
+        stop_price = float(current_price + (2 * n_value))
 
     logger.info(f"  {symbol}: EXECUTING ENTRY - {action} {unit_size} shares at market")
+    logger.info(f"  {symbol}: STOP will be @ ${stop_price:.2f} (2N from ${current_price:.2f})")
 
-    # Place market order
-    order = MarketOrder(action, unit_size)
-    trade = ib.placeOrder(contract, order)
+    # Use BRACKET ORDER to ensure stop is always placed with entry
+    # This guarantees the stop activates when entry fills - no orphan entries!
+    bracket = ib.bracketOrder(
+        action=action,
+        quantity=unit_size,
+        limitPrice=0,  # Not used for market orders
+        takeProfitPrice=0,  # No take profit
+        stopLossPrice=stop_price,
+    )
 
-    # Wait for fill (30s timeout)
-    timeout = 30
-    start = asyncio.get_event_loop().time()
-    while trade.orderStatus.status not in ("Filled", "Cancelled", "Inactive"):
-        await asyncio.sleep(0.5)
-        if asyncio.get_event_loop().time() - start > timeout:
-            logger.error(f"  {symbol}: Order timeout after {timeout}s")
-            return {"success": False, "reason": "Order timeout"}
+    # Modify parent to be market order (bracket defaults to limit)
+    parent = bracket[0]
+    parent.orderType = "MKT"
+    parent.tif = "DAY"
 
-    if trade.orderStatus.status != "Filled":
-        logger.error(f"  {symbol}: Order not filled: {trade.orderStatus.status}")
-        return {"success": False, "reason": f"Order {trade.orderStatus.status}"}
-
-    fill_price = Decimal(str(trade.orderStatus.avgFillPrice))
-    filled_qty = int(trade.orderStatus.filled)
-    logger.info(f"  {symbol}: FILLED {filled_qty} shares @ ${fill_price:.2f}")
-
-    # Calculate stop price (2N from fill price)
-    if direction == Direction.LONG:
-        stop_price = fill_price - (2 * n_value)
-    else:
-        stop_price = fill_price + (2 * n_value)
-
-    # Place GTC stop order
-    stop_action = "SELL" if direction == Direction.LONG else "BUY"
-    stop_order = StopOrder(stop_action, filled_qty, float(stop_price))
+    # Modify stop loss order
+    stop_order = bracket[2]  # bracket = [parent, takeProfit, stopLoss]
     stop_order.tif = "GTC"
     stop_order.outsideRth = True
-    ib.placeOrder(contract, stop_order)
 
-    logger.info(f"  {symbol}: STOP placed @ ${stop_price:.2f}")
+    # Place the bracket (parent + stop)
+    for o in [parent, stop_order]:
+        ib.placeOrder(contract, o)
+        await asyncio.sleep(0.3)
 
-    # Log POSITION_OPENED to alerts database
-    try:
-        await alert_logger.log_position_opened(
-            symbol=symbol,
-            direction=direction,
-            system=system,
-            entry_price=fill_price,
-            contracts=filled_qty,
-            stop_price=stop_price,
-            n_value=n_value,
-        )
-    except Exception as e:
-        logger.error(f"  {symbol}: Failed to log alert: {e}")
+    logger.info(f"  {symbol}: BRACKET ORDER placed (entry + stop linked)")
+
+    # Wait for fill (30s timeout) - but stop is already attached!
+    timeout = 30
+    start = asyncio.get_event_loop().time()
+    parent_trade = None
+    for t in ib.trades():
+        if t.order.orderId == parent.orderId:
+            parent_trade = t
+            break
+
+    if parent_trade:
+        while parent_trade.orderStatus.status not in ("Filled", "Cancelled", "Inactive", "PreSubmitted"):
+            await asyncio.sleep(0.5)
+            if asyncio.get_event_loop().time() - start > timeout:
+                break
+
+    # Check final status
+    filled = False
+    fill_price = current_price  # Default to current price if not filled yet
+    filled_qty = unit_size
+
+    if parent_trade and parent_trade.orderStatus.status == "Filled":
+        fill_price = Decimal(str(parent_trade.orderStatus.avgFillPrice))
+        filled_qty = int(parent_trade.orderStatus.filled)
+        filled = True
+        logger.info(f"  {symbol}: FILLED {filled_qty} shares @ ${fill_price:.2f}")
+    elif parent_trade and parent_trade.orderStatus.status == "PreSubmitted":
+        logger.info(f"  {symbol}: Order queued for market open (stop attached)")
+    else:
+        logger.warning(f"  {symbol}: Order status: {parent_trade.orderStatus.status if parent_trade else 'unknown'}")
+
+    # Recalculate stop price based on fill (if filled)
+    if filled:
+        if direction == Direction.LONG:
+            stop_price = float(fill_price - (2 * n_value))
+        else:
+            stop_price = float(fill_price + (2 * n_value))
+    stop_price = Decimal(str(stop_price))
+
+    # Log POSITION_OPENED to alerts database (only if filled)
+    if filled:
+        try:
+            await alert_logger.log_position_opened(
+                symbol=symbol,
+                direction=direction,
+                system=system,
+                entry_price=fill_price,
+                contracts=filled_qty,
+                stop_price=stop_price,
+                n_value=n_value,
+            )
+        except Exception as e:
+            logger.error(f"  {symbol}: Failed to log alert: {e}")
 
     return {
         "success": True,
+        "filled": filled,
+        "queued": not filled,  # True if queued for tomorrow
         "filled_qty": filled_qty,
         "fill_price": float(fill_price),
         "stop_price": float(stop_price),
