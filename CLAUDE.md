@@ -407,6 +407,8 @@ Implementation plans in `docs/plans/`:
 
 | Date | Bug | Fix | File |
 |------|-----|-----|------|
+| 2026-02-10 | No margin check before entries | Check buying power before placing orders, skip if insufficient | `daily_run.py` |
+| 2026-02-10 | Positions could lose stops after restart | Add startup verification that all positions have stops | `monitor_positions.py` |
 | 2026-02-10 | Entry orders placed without stops after-hours | Use IBKR bracket orders to link entry + stop - stop activates when entry fills | `daily_run.py` |
 | 2026-02-10 | Duplicate stop orders created after-hours | Use `reqAllOpenOrdersAsync()` + `ib.trades()` instead of `openTrades()` to see PreSubmitted orders | `monitor_positions.py`, `daily_run.py` |
 | 2026-02-09 | `get_open_orders()` failed with AttributeError | Changed from `openOrders()` to `openTrades()` - Order objects don't have `.contract`, Trade objects do | `ibkr_broker.py` |

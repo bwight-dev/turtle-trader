@@ -600,6 +600,84 @@ async def run_monitoring_cycle(
     return results
 
 
+async def verify_stops_on_startup(
+    ib: IB,
+    position_repo: PostgresOpenPositionRepository,
+) -> int:
+    """Verify all positions have stop orders, place missing ones.
+
+    CRITICAL: Every position MUST have a stop. This runs on startup to
+    catch any positions that lost their stops (e.g., after system restart).
+
+    Returns number of stops placed.
+    """
+    logger.info("=== STARTUP STOP VERIFICATION ===")
+
+    # Get all positions
+    positions = ib.positions()
+    if not positions:
+        logger.info("No positions to verify")
+        return 0
+
+    # Get all existing stop orders
+    await ib.reqAllOpenOrdersAsync()
+    await asyncio.sleep(0.5)
+
+    stops_by_symbol = {}
+    for t in ib.trades():
+        if (t.order.orderType == 'STP' and
+            t.orderStatus.status not in ('Cancelled', 'Inactive', 'Filled')):
+            stops_by_symbol[t.contract.symbol] = t
+
+    # Check each position has a stop
+    stops_placed = 0
+    for pos in positions:
+        symbol = pos.contract.symbol
+        qty = abs(int(pos.position))
+        direction = Direction.LONG if pos.position > 0 else Direction.SHORT
+
+        if symbol in stops_by_symbol:
+            stop = stops_by_symbol[symbol]
+            logger.info(f"  {symbol}: Stop exists @ ${stop.order.auxPrice:.2f}")
+            continue
+
+        # No stop! Get stop price from database
+        logger.warning(f"  {symbol}: NO STOP FOUND - placing protective stop")
+
+        try:
+            stored = await position_repo.get_position(symbol)
+            if stored and stored.stop_price:
+                stop_price = float(stored.stop_price)
+            else:
+                # Calculate from current price if not stored
+                logger.warning(f"  {symbol}: No stored stop price, using 2N estimate")
+                continue  # Skip - need manual intervention
+
+            # Place stop order
+            contract = Stock(symbol, 'SMART', 'USD')
+            await ib.qualifyContractsAsync(contract)
+
+            stop_action = 'SELL' if direction == Direction.LONG else 'BUY'
+            stop_order = StopOrder(stop_action, qty, stop_price)
+            stop_order.tif = 'GTC'
+            stop_order.outsideRth = True
+
+            ib.placeOrder(contract, stop_order)
+            logger.info(f"  {symbol}: Placed stop @ ${stop_price:.2f} for {qty} shares")
+            stops_placed += 1
+            await asyncio.sleep(0.3)
+
+        except Exception as e:
+            logger.error(f"  {symbol}: Failed to place stop: {e}")
+
+    if stops_placed > 0:
+        logger.info(f"Placed {stops_placed} missing stop(s)")
+    else:
+        logger.info("All positions have stops")
+
+    return stops_placed
+
+
 async def main():
     parser = argparse.ArgumentParser(description='Monitor turtle trading positions')
     parser.add_argument('--once', action='store_true', help='Run single check and exit')
@@ -627,6 +705,10 @@ async def main():
         logger.error(f"Failed to connect to IBKR: {e}")
         logger.error("Make sure TWS is running with API connections enabled")
         return 1
+
+    # CRITICAL: Verify all positions have stops on startup
+    if not args.dry_run:
+        await verify_stops_on_startup(ib, position_repo)
 
     try:
         if args.once:

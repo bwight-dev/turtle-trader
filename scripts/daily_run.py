@@ -177,6 +177,19 @@ async def execute_entry(
     if unit_size < 1:
         return {"success": False, "reason": f"Unit size too small: {unit_size}"}
 
+    # Check margin before placing order
+    notional_value = float(current_price) * unit_size
+    try:
+        account_values = {v.tag: float(v.value) for v in ib.accountValues() if v.currency == "USD"}
+        buying_power = account_values.get("BuyingPower", 0)
+        # Use 50% of buying power as safety buffer
+        if notional_value > buying_power * 0.5:
+            logger.warning(f"  {symbol}: SKIPPED - insufficient margin (need ${notional_value:,.0f}, have ${buying_power:,.0f} BP)")
+            return {"success": False, "reason": f"Insufficient margin: ${notional_value:,.0f} > 50% of ${buying_power:,.0f}"}
+    except Exception as e:
+        logger.warning(f"  {symbol}: Could not check margin: {e}")
+        # Continue anyway - IBKR will reject if truly insufficient
+
     # Create contract
     contract = Stock(symbol, "SMART", "USD")
     await ib.qualifyContractsAsync(contract)
