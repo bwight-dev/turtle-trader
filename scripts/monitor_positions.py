@@ -178,10 +178,13 @@ async def execute_pyramid(
         new_stop = fill_price + (2 * n_value)
 
     # Cancel existing stop orders for this symbol
-    for existing_trade in ib.openTrades():
+    # Must use reqAllOpenOrdersAsync to see PreSubmitted (after-hours) orders
+    await ib.reqAllOpenOrdersAsync()
+    await asyncio.sleep(0.5)
+    for existing_trade in ib.trades():
         if (existing_trade.contract.symbol == symbol and
             existing_trade.order.orderType == 'STP'):
-            logger.info(f"  {symbol}: Cancelling old stop order")
+            logger.info(f"  {symbol}: Cancelling old stop order (id={existing_trade.order.orderId})")
             ib.cancelOrder(existing_trade.order)
             await asyncio.sleep(1)
 
@@ -253,10 +256,13 @@ async def execute_exit(
     logger.info(f"  {symbol}: EXECUTING EXIT - {action} {abs(quantity)} shares at market")
 
     # Cancel any existing stop orders first
-    for existing_trade in ib.openTrades():
+    # Must use reqAllOpenOrdersAsync to see PreSubmitted (after-hours) orders
+    await ib.reqAllOpenOrdersAsync()
+    await asyncio.sleep(0.5)
+    for existing_trade in ib.trades():
         if (existing_trade.contract.symbol == symbol and
             existing_trade.order.orderType == 'STP'):
-            logger.info(f"  {symbol}: Cancelling stop order before exit")
+            logger.info(f"  {symbol}: Cancelling stop order before exit (id={existing_trade.order.orderId})")
             ib.cancelOrder(existing_trade.order)
             await asyncio.sleep(0.5)
 

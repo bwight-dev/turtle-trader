@@ -311,6 +311,12 @@ Market Data (IBKR primary, Yahoo backup) → N/Donchian calculations → Strateg
 - `ib.openTrades()` returns `Trade` objects with both `.order` and `.contract`
 - Always use `openTrades()` when you need contract info for open orders
 
+**Critical:** After-hours "PreSubmitted" orders are invisible to `openTrades()`:
+- Orders placed after market close go to "PreSubmitted" status
+- `ib.openTrades()` does NOT return PreSubmitted orders!
+- Must use `await ib.reqAllOpenOrdersAsync()` then `ib.trades()` to see ALL orders
+- Failure to do this causes duplicate orders when checking for existing stops
+
 ### Keeping IBKR Connected
 
 TWS disconnects for several reasons. Here's how to prevent issues:
@@ -396,6 +402,7 @@ Implementation plans in `docs/plans/`:
 
 | Date | Bug | Fix | File |
 |------|-----|-----|------|
+| 2026-02-10 | Duplicate stop orders created after-hours | Use `reqAllOpenOrdersAsync()` + `ib.trades()` instead of `openTrades()` to see PreSubmitted orders | `monitor_positions.py`, `daily_run.py` |
 | 2026-02-09 | `get_open_orders()` failed with AttributeError | Changed from `openOrders()` to `openTrades()` - Order objects don't have `.contract`, Trade objects do | `ibkr_broker.py` |
 | 2026-02-04 | Donchian channels included current bar | Added `exclude_current=True` for live signal detection | `channels.py` |
 | 2026-02-04 | Signals missed due to channel bug | Fixed - QQQ SHORT, XLE LONG detected | `daily_run.py`, `monitor_positions.py` |

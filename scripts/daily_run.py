@@ -155,6 +155,16 @@ async def execute_entry(
     Returns:
         Dict with execution details
     """
+    # Check for existing pending orders for this symbol (prevent duplicates)
+    await ib.reqAllOpenOrdersAsync()
+    await asyncio.sleep(0.5)
+    for existing_trade in ib.trades():
+        if existing_trade.contract.symbol == symbol:
+            order_type = existing_trade.order.orderType
+            status = existing_trade.orderStatus.status
+            logger.warning(f"  {symbol}: SKIPPED - pending {order_type} order exists (status={status})")
+            return {"success": False, "reason": f"Pending order exists: {order_type} {status}"}
+
     # Get account equity
     try:
         equity = await get_account_equity(ib)
