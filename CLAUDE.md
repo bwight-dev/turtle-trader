@@ -407,6 +407,7 @@ Implementation plans in `docs/plans/`:
 
 | Date | Bug | Fix | File |
 |------|-----|-----|------|
+| 2026-02-11 | No margin check before pyramids | Check available funds before pyramid orders, skip if insufficient | `monitor_positions.py` |
 | 2026-02-10 | No margin check before entries | Check buying power before placing orders, skip if insufficient | `daily_run.py` |
 | 2026-02-10 | Positions could lose stops after restart | Add startup verification that all positions have stops | `monitor_positions.py` |
 | 2026-02-10 | Entry orders placed without stops after-hours | Use IBKR bracket orders to link entry + stop - stop activates when entry fills | `daily_run.py` |

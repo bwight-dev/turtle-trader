@@ -136,6 +136,24 @@ async def execute_pyramid(
         logger.warning(f"  {symbol}: Unit size too small ({unit_size}), skipping pyramid")
         return {'success': False, 'reason': 'Unit size too small'}
 
+    # Check margin before placing order
+    notional_value = float(current_price) * unit_size
+    try:
+        account_values = {v.tag: float(v.value) for v in ib.accountValues() if v.currency == 'USD'}
+        available_funds = account_values.get('AvailableFunds', 0)
+        buying_power = account_values.get('BuyingPower', 0)
+
+        # Need at least 25% of notional as available margin buffer
+        min_required = notional_value * 0.25
+        if available_funds < min_required:
+            logger.warning(f"  {symbol}: PYRAMID SKIPPED - insufficient margin")
+            logger.warning(f"    Need ${min_required:,.0f} available, have ${available_funds:,.0f}")
+            logger.warning(f"    Buying power: ${buying_power:,.0f}")
+            return {'success': False, 'reason': f'Insufficient margin: ${available_funds:,.0f} < ${min_required:,.0f}'}
+    except Exception as e:
+        logger.warning(f"  {symbol}: Could not check margin: {e}")
+        # Continue anyway - IBKR will reject if truly insufficient
+
     # Create stock contract
     contract = Stock(symbol, 'SMART', 'USD')
     await ib.qualifyContractsAsync(contract)
