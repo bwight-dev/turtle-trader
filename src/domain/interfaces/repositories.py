@@ -1,12 +1,15 @@
 """Repository interfaces (ports) for data persistence."""
 
 from abc import ABC, abstractmethod
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
 from src.domain.models.alert import Alert, OpenPositionSnapshot
+from src.domain.models.enums import Direction, System
+from src.domain.models.event import Event, EventType, OutcomeType
 from src.domain.models.market import DonchianChannel, NValue
+from src.domain.models.run import Run, TaskType
 
 
 class NValueRepository(ABC):
@@ -139,6 +142,27 @@ class AlertRepository(ABC):
         ...
 
     @abstractmethod
+    async def has_signal_today(
+        self,
+        symbol: str,
+        direction: Direction,
+        system: System,
+    ) -> bool:
+        """Check if an ENTRY_SIGNAL already exists today for this combination.
+
+        Used to prevent duplicate signals when scanning hourly.
+
+        Args:
+            symbol: Market symbol
+            direction: Trade direction (LONG/SHORT)
+            system: Trading system (S1/S2)
+
+        Returns:
+            True if signal already exists today, False otherwise
+        """
+        ...
+
+    @abstractmethod
     async def get_recent(self, limit: int = 50) -> list[Alert]:
         """Get most recent alerts."""
         ...
@@ -184,4 +208,170 @@ class OpenPositionRepository(ABC):
     @abstractmethod
     async def delete(self, symbol: str) -> None:
         """Delete a position snapshot (when position closes)."""
+        ...
+
+
+class RunRepository(ABC):
+    """Repository interface for run event logging.
+
+    Runs track each execution of scanner and monitor tasks,
+    capturing what was checked and what decisions were made.
+    """
+
+    @abstractmethod
+    async def save(self, run: Run) -> None:
+        """Insert or update a run record.
+
+        Uses upsert to allow updating a run after completion.
+        """
+        ...
+
+    @abstractmethod
+    async def get_by_id(self, run_id: UUID) -> Run | None:
+        """Get a single run by ID with full details."""
+        ...
+
+    @abstractmethod
+    async def get_recent(
+        self,
+        task_type: TaskType | None = None,
+        limit: int = 50,
+    ) -> list[Run]:
+        """Get recent runs, optionally filtered by task type.
+
+        Args:
+            task_type: Filter to specific task type, or None for all
+            limit: Maximum number of runs to return
+
+        Returns:
+            List of runs, newest first
+        """
+        ...
+
+    @abstractmethod
+    async def get_by_date(
+        self,
+        target_date: date,
+        task_type: TaskType | None = None,
+    ) -> list[Run]:
+        """Get all runs for a specific date.
+
+        Args:
+            target_date: The date to query
+            task_type: Filter to specific task type, or None for all
+
+        Returns:
+            List of runs for that date, newest first
+        """
+        ...
+
+
+class EventRepository(ABC):
+    """Repository interface for event streaming persistence.
+
+    Events are immutable audit records capturing every trading
+    decision with full context. Used for:
+    - Complete audit trail
+    - Calculation replay
+    - Debugging
+    - Performance analysis
+
+    See docs/plans/2026-02-12-event-streaming-design.md for full design.
+    """
+
+    @abstractmethod
+    async def save(self, event: Event) -> None:
+        """Save an event record.
+
+        Events are immutable - this is always an insert.
+        """
+        ...
+
+    @abstractmethod
+    async def get_by_run_id(self, run_id: UUID) -> list[Event]:
+        """Get all events for a specific run.
+
+        Returns events in sequence order.
+        """
+        ...
+
+    @abstractmethod
+    async def get_by_symbol(
+        self,
+        symbol: str,
+        limit: int = 100,
+        event_types: list[EventType] | None = None,
+    ) -> list[Event]:
+        """Get events for a specific symbol.
+
+        Args:
+            symbol: Market symbol
+            limit: Maximum events to return
+            event_types: Filter to specific event types, or None for all
+
+        Returns:
+            Events newest first
+        """
+        ...
+
+    @abstractmethod
+    async def get_recent(
+        self,
+        limit: int = 100,
+        source: str | None = None,
+        event_types: list[EventType] | None = None,
+        outcomes: list[OutcomeType] | None = None,
+    ) -> list[Event]:
+        """Get recent events with optional filters.
+
+        Args:
+            limit: Maximum events to return
+            source: Filter to "scanner" or "monitor", or None for all
+            event_types: Filter to specific event types, or None for all
+            outcomes: Filter to specific outcomes, or None for all
+
+        Returns:
+            Events newest first
+        """
+        ...
+
+    @abstractmethod
+    async def get_by_date_range(
+        self,
+        start: datetime,
+        end: datetime,
+        symbol: str | None = None,
+        event_types: list[EventType] | None = None,
+    ) -> list[Event]:
+        """Get events within a date range.
+
+        Args:
+            start: Start of range (inclusive)
+            end: End of range (inclusive)
+            symbol: Filter to specific symbol, or None for all
+            event_types: Filter to specific event types, or None for all
+
+        Returns:
+            Events in chronological order
+        """
+        ...
+
+    @abstractmethod
+    async def get_non_hold_events(
+        self,
+        since: datetime | None = None,
+        limit: int = 100,
+    ) -> list[Event]:
+        """Get events where something happened (not HOLD).
+
+        Useful for reviewing trading activity without the noise
+        of routine position checks.
+
+        Args:
+            since: Only events after this time, or None for all
+            limit: Maximum events to return
+
+        Returns:
+            Events newest first, excluding HOLD outcomes
+        """
         ...

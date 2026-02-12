@@ -8,6 +8,7 @@ from src.domain.models.enums import (
     PositionAction,
     System,
 )
+from src.domain.models.event import Event, EventType, OutcomeType
 from src.domain.models.limits import LimitCheckResult
 from src.domain.models.market import Bar, DonchianChannel, MarketSpec, NValue
 from src.domain.models.order import BracketOrder, OrderFill, StopModification
@@ -24,6 +25,10 @@ __all__ = [
     "CorrelationGroup",
     "OrderType",
     "OrderStatus",
+    # Events
+    "Event",
+    "EventType",
+    "OutcomeType",
     # Market data
     "Bar",
     "NValue",

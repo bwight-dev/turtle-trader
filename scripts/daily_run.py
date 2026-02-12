@@ -26,9 +26,18 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 from src.adapters.backtesting.data_loader import SMALL_ACCOUNT_ETF_UNIVERSE
 from src.adapters.mappers.correlation_mapper import get_etf_correlation_group
 from src.adapters.repositories.alert_repository import PostgresAlertRepository
+from src.adapters.repositories.event_repository import PostgresEventRepository
 from src.adapters.repositories.position_repository import PostgresOpenPositionRepository
+from src.adapters.repositories.run_repository import PostgresRunRepository
 from src.adapters.repositories.trade_repository import PostgresTradeRepository
 from src.application.commands.log_alert import AlertLogger
+from src.application.commands.log_event import (
+    EventLogger,
+    build_market_context,
+    build_signal_context,
+)
+from src.application.commands.log_run import RunLogger
+from src.domain.models.event import EventType, OutcomeType
 from src.domain.models.enums import Direction, System
 from src.domain.models.market import Bar, NValue
 from src.domain.models.portfolio import Portfolio
@@ -460,11 +469,20 @@ async def main(
     print(f"\nScanning {len(universe)} markets...")
     print()
 
-    # Initialize repositories and logger
+    # Initialize repositories and loggers
     alert_repo = PostgresAlertRepository()
     position_repo = PostgresOpenPositionRepository()
     trade_repo = PostgresTradeRepository()
+    run_repo = PostgresRunRepository()
+    event_repo = PostgresEventRepository()
     alert_logger = AlertLogger(alert_repo, position_repo)
+    run_logger = RunLogger(run_repo)
+    event_logger = EventLogger(event_repo)
+
+    # Start run and event logging
+    run = run_logger.start_scanner_run(len(universe))
+    event_logger.start_run("scanner")
+    await event_logger.log_scanner_started(symbols=universe, dry_run=dry_run)
 
     # Initialize signal detector and S1 filter
     detector = SignalDetector()
@@ -659,6 +677,24 @@ async def main(
             )
 
     print()
+
+    # Complete event logging
+    signals_detected = sum(len(r.get("signals", [])) for r in results)
+    errors_count = len(errors)
+    await event_logger.log_scanner_completed(
+        symbols_scanned=len(universe),
+        signals_detected=signals_detected,
+        signals_approved=len(signals_to_execute),
+        positions_opened=len([e for e in executions if e["result"].get("success")]) if executions else 0,
+        errors=errors_count,
+        dry_run=dry_run,
+    )
+
+    # Complete run logging
+    if errors_count > 0:
+        await run_logger.complete_run(run)
+    else:
+        await run_logger.complete_run(run)
 
     # Disconnect from IBKR
     if ib and ib.isConnected():
