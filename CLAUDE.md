@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Turtle Trading Bot is a Python algorithmic trading system implementing classic Turtle Trading rules with modern adaptations. The project is currently in **active implementation** phase.
 
-## Implementation Progress (as of 2026-02-09)
+## Implementation Progress (as of 2026-02-12)
 
 **499 tests passing** (451 unit + 48 integration, 4 skipped)
 
@@ -19,17 +19,19 @@ Turtle Trading Bot is a Python algorithmic trading system implementing classic T
 | Execution | M18-M21 | ✓ Complete |
 | Integration | M22-M25 | ✓ Complete |
 | **Live Testing** | Paper trading | ✓ Active |
+| **Event Streaming** | Audit trail | ✓ Complete |
 
-**All 25 milestones complete!** Now in live paper trading on IBKR.
+**All 25 milestones complete!** Now in live paper trading on IBKR with full event audit trail.
 
 ### Current Status
 - **Paper Account**: DUP318628 (IBKR)
 - **Position Monitor**: Running via launchd (every 60s)
-- **Daily Scanner**: Scheduled for 6:30 AM Mon-Fri
+- **Daily Scanner**: Scheduled for 6:30 AM, 10:00 AM, 1:05 PM Mon-Fri
 - **Discord Alerts**: Webhook notifications for signals
-- **Open Positions** (as of 2026-02-04):
-  - QQQ SHORT: 26 shares, stop @ $625.17 (pending fill)
-  - XLE LONG: 243 shares, stop @ $50.75 (pending fill)
+- **Event Streaming**: Full audit trail with context capture
+- **Open Positions** (as of 2026-02-12):
+  - XLE LONG: 951 shares @ $53.40, stop @ $51.35
+  - XLU LONG: 1192 shares @ $44.99, stop @ $43.65
 
 ### Completed Components:
 - **M1**: Project setup + Neon PostgreSQL connection
@@ -94,7 +96,7 @@ DATABASE_URL=postgresql://neondb_owner:npg_ipM4O8DGaeBP@ep-autumn-morning-afn6oh
 
 ### Dashboard Tables
 
-Two additional tables support the website dashboard:
+Three tables support the website dashboard:
 
 **`alerts`** - Immutable event log for trading signals and actions:
 - `ENTRY_SIGNAL` - Breakout signal detected
@@ -106,6 +108,8 @@ Two additional tables support the website dashboard:
 
 **`open_positions`** - Current state of open positions (upserted on significant changes)
 
+**`events`** - Full audit trail with context capture (see Event Streaming below)
+
 Query examples:
 ```sql
 -- All open positions for dashboard
@@ -116,7 +120,40 @@ SELECT * FROM alerts WHERE timestamp > NOW() - INTERVAL '24 hours' ORDER BY time
 
 -- Unacknowledged count for notification badge
 SELECT COUNT(*) FROM alerts WHERE acknowledged = FALSE;
+
+-- Recent events with outcomes
+SELECT timestamp, event_type, outcome, symbol FROM events ORDER BY timestamp DESC LIMIT 20;
 ```
+
+### Event Streaming (Audit Trail)
+
+The events table captures every trading decision with full context for replay and debugging.
+
+**Event Types (17):**
+- Scanner: `scanner_started`, `signal_detected`, `signal_evaluated`, `entry_attempted`, `entry_filled`, `scanner_completed`
+- Monitor: `monitor_started`, `position_checked`, `exit_attempted`, `exit_filled`, `pyramid_attempted`, `pyramid_filled`, `stop_modified`, `monitor_completed`
+- System: `connection_lost`, `connection_restored`, `error_occurred`
+
+**Outcomes:**
+- Position: `hold`, `exit_stop_triggered`, `exit_breakout_triggered`, `pyramid_triggered`
+- Signals: `approved`, `filtered_s1`, `limit_market`, `limit_correlated`, `limit_total`, `limit_risk_cap`
+- Entry: `breakout_20`, `breakout_55`
+- System: `completed`, `completed_with_errors`, `recovered`, `fatal`
+
+**Context Capture (The Five Questions):**
+Every event captures full state needed to replay the decision:
+- **Price**: Current market price, OHLCV
+- **Volatility (N)**: ATR value, calculation date, period
+- **Equity**: Actual vs notional, drawdown status
+- **System**: S1 or S2, direction
+- **Risk**: Position size, stop distance, units
+
+**Implementation:**
+- Model: `src/domain/models/event.py`
+- Repository: `src/adapters/repositories/event_repository.py`
+- Logger: `src/application/commands/log_event.py`
+- Migration: `src/infrastructure/migrations/007_create_events_table.sql`
+- Design: `docs/plans/2026-02-12-event-streaming-design.md`
 
 ## Build & Development Commands
 

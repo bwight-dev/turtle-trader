@@ -37,8 +37,17 @@ from ib_insync import IB, Stock, MarketOrder, StopOrder
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.adapters.repositories.alert_repository import PostgresAlertRepository
+from src.adapters.repositories.event_repository import PostgresEventRepository
 from src.adapters.repositories.position_repository import PostgresOpenPositionRepository
+from src.adapters.repositories.run_repository import PostgresRunRepository
 from src.application.commands.log_alert import AlertLogger, is_significant_change
+from src.application.commands.log_event import (
+    EventLogger,
+    build_market_context,
+    build_position_context,
+)
+from src.application.commands.log_run import RunLogger
+from src.domain.models.event import EventType, OutcomeType
 from src.domain.models.alert import AlertType, OpenPositionSnapshot
 from src.domain.models.market import Bar, NValue
 from src.domain.models.position import Position, PyramidLevel
@@ -484,6 +493,8 @@ async def run_monitoring_cycle(
     ib: IB,
     alert_logger: AlertLogger | None = None,
     position_repo: PostgresOpenPositionRepository | None = None,
+    run_logger: RunLogger | None = None,
+    event_logger: EventLogger | None = None,
     dry_run: bool = False,
 ) -> list[dict]:
     """Run a single monitoring cycle.
@@ -492,6 +503,8 @@ async def run_monitoring_cycle(
         ib: IBKR connection
         alert_logger: Alert logger for dashboard
         position_repo: Position repository for snapshots
+        run_logger: Run logger for tracking monitoring runs
+        event_logger: Event logger for audit trail
         dry_run: If True, detect signals but don't execute
     """
     logger.info("=" * 60)
@@ -500,11 +513,31 @@ async def run_monitoring_cycle(
         logger.info(">>> DRY RUN MODE - No orders will be executed <<<")
     logger.info("=" * 60)
 
+    # Start run logging
+    run = run_logger.start_monitor_run() if run_logger else None
+    if run:
+        run_logger.set_ibkr_connected(run, ib.isConnected())
+
     # Get positions
     positions = await get_ibkr_positions(ib)
 
+    # Start event logging
+    if event_logger:
+        event_logger.start_run("monitor")
+        await event_logger.log_monitor_started(
+            positions=[p['symbol'] for p in positions],
+            dry_run=dry_run,
+        )
+
     if not positions:
         logger.info("No open positions to monitor")
+        if run and run_logger:
+            await run_logger.complete_run(run)
+        if event_logger:
+            await event_logger.log_monitor_completed(
+                positions_checked=0,
+                dry_run=dry_run,
+            )
         return []
 
     logger.info(f"Checking {len(positions)} position(s)...")
@@ -614,6 +647,23 @@ async def run_monitoring_cycle(
             for r in actions_needed:
                 logger.warning(f"  -> {r['symbol']}: {r['action']} - {r['reason']}")
 
+    # Complete run logging
+    if run and run_logger:
+        await run_logger.complete_run(run)
+
+    # Complete event logging
+    exits_count = len([r for r in results if r.get('action') in ('exit_stop', 'exit_breakout', 'EXIT_STOP', 'EXIT_BREAKOUT')])
+    pyramids_count = len([r for r in results if r.get('action') in ('pyramid', 'PYRAMID')])
+    errors_count = len([r for r in results if 'error' in r])
+    if event_logger:
+        await event_logger.log_monitor_completed(
+            positions_checked=len(positions),
+            exits=exits_count,
+            pyramids=pyramids_count,
+            errors=errors_count,
+            dry_run=dry_run,
+        )
+
     logger.info("-" * 60)
     return results
 
@@ -708,11 +758,15 @@ async def main():
     if args.dry_run:
         logger.info(">>> DRY RUN MODE - No orders will be executed <<<")
 
-    # Initialize alert repositories for dashboard logging
+    # Initialize repositories for dashboard logging
     alert_repo = PostgresAlertRepository()
     position_repo = PostgresOpenPositionRepository()
+    run_repo = PostgresRunRepository()
+    event_repo = PostgresEventRepository()
     alert_logger = AlertLogger(alert_repo, position_repo)
-    logger.info("Alert logging enabled for dashboard")
+    run_logger = RunLogger(run_repo)
+    event_logger = EventLogger(event_repo)
+    logger.info("Alert, run, and event logging enabled for dashboard")
 
     # Connect to IBKR
     ib = IB()
@@ -731,7 +785,7 @@ async def main():
     try:
         if args.once:
             # Single check
-            await run_monitoring_cycle(ib, alert_logger, position_repo, dry_run=args.dry_run)
+            await run_monitoring_cycle(ib, alert_logger, position_repo, run_logger, event_logger, dry_run=args.dry_run)
         else:
             # Continuous monitoring
             cycle = 0
@@ -759,7 +813,7 @@ async def main():
                 # Reset failure counter on successful connection
                 consecutive_failures = 0
 
-                await run_monitoring_cycle(ib, alert_logger, position_repo, dry_run=args.dry_run)
+                await run_monitoring_cycle(ib, alert_logger, position_repo, run_logger, event_logger, dry_run=args.dry_run)
                 logger.info(f"Next check in {args.interval} seconds...")
                 await asyncio.sleep(args.interval)
 
