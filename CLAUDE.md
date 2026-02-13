@@ -26,9 +26,10 @@ Turtle Trading Bot is a Python algorithmic trading system implementing classic T
 ### Current Status
 - **Paper Account**: DUP318628 (IBKR)
 - **Position Monitor**: Running via launchd (every 60s)
-- **Daily Scanner**: Scheduled for 6:30 AM, 10:00 AM, 1:05 PM Mon-Fri
+- **Daily Scanner**: Every hour :30, 7:30 AM-3:30 PM Mon-Fri (9 runs/day)
 - **Discord Alerts**: Webhook notifications for signals
 - **Event Streaming**: Full audit trail with context capture
+- **Cash Turtle Mode**: No margin/leverage - trades only with settled cash
 - **Open Positions** (as of 2026-02-12):
   - XLE LONG: 951 shares @ $53.40, stop @ $51.35
   - XLU LONG: 1192 shares @ $44.99, stop @ $43.65
@@ -198,13 +199,12 @@ Two scheduled tasks run on macOS via launchd.
 
 | Task | Schedule (Pacific) | Script | Log File |
 |------|----------|--------|----------|
-| Market Scanner | 6:30 AM, 10:00 AM, 1:05 PM Mon-Fri | `scripts/daily_run.py` | `logs/daily.log` |
+| Market Scanner | Every hour :30, 7:30 AM–3:30 PM Mon-Fri | `scripts/daily_run.py` | `logs/daily.log` |
 | Position Monitor | Every 60 seconds (continuous) | `scripts/monitor_positions.py` | `logs/monitor.error.log` |
 
-**Scanner runs 3 times per day**:
-- 6:30 AM PT (9:30 AM ET) - Market open
-- 10:00 AM PT (1:00 PM ET) - Mid-day
-- 1:05 PM PT (4:05 PM ET) - After close ← **catches end-of-day breakouts**
+**Scanner runs 9 times per day** (every hour on the :30):
+- 7:30 AM PT (10:30 AM ET) through 3:30 PM PT (6:30 PM ET)
+- Covers pre-market through after close
 
 Duplicate signals are automatically deduplicated - only one alert per symbol/direction/system per day.
 
@@ -291,6 +291,18 @@ The Position Monitor is the key module that was missing in v1. It continuously m
 2. **Breakout exit** (10/20-day) → EXIT_BREAKOUT
 3. **Pyramid trigger** (+½N from last entry) → PYRAMID
 4. **No action** → HOLD
+
+### Stop Coverage Safeguard (`scripts/monitor_positions.py`)
+
+Every share MUST have a stop order. The `verify_stop_coverage()` function runs:
+- On startup
+- At the beginning of each monitoring cycle
+
+It detects and fixes:
+- Positions with no stops at all
+- Positions with partial stops (e.g., 465 shares but stop only covers 213)
+
+This can happen when pyramid orders fill in batches while margin is tight, leaving some shares unprotected.
 
 ### Data Flow
 
@@ -444,6 +456,8 @@ Implementation plans in `docs/plans/`:
 
 | Date | Bug | Fix | File |
 |------|-----|-----|------|
+| 2026-02-12 | **MARGIN CALL** - IBKR force-liquidated positions (VNQ, TLT, partial XLE) | **Cash Turtle Mode** - Use SettledCash instead of BuyingPower. No leverage. Block trades when cash < notional. Turtle rules designed for futures (5% margin), not stocks (50% Reg T). | `daily_run.py`, `monitor_positions.py` |
+| 2026-02-11 | Partial stop coverage after pyramid batches | Add `verify_stop_coverage()` - checks stop qty matches position qty, places gap fills on startup and each cycle | `monitor_positions.py` |
 | 2026-02-11 | No margin check before pyramids | Check available funds before pyramid orders, skip if insufficient | `monitor_positions.py` |
 | 2026-02-10 | No margin check before entries | Check buying power before placing orders, skip if insufficient | `daily_run.py` |
 | 2026-02-10 | Positions could lose stops after restart | Add startup verification that all positions have stops | `monitor_positions.py` |

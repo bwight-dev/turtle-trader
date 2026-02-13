@@ -49,6 +49,7 @@ from src.application.commands.log_event import (
 from src.application.commands.log_run import RunLogger
 from src.domain.models.event import EventType, OutcomeType
 from src.domain.models.alert import AlertType, OpenPositionSnapshot
+from src.domain.models.event import EventContext, EventType, OutcomeType
 from src.domain.models.market import Bar, NValue
 from src.domain.models.position import Position, PyramidLevel
 from src.domain.models.enums import Direction, System
@@ -145,23 +146,28 @@ async def execute_pyramid(
         logger.warning(f"  {symbol}: Unit size too small ({unit_size}), skipping pyramid")
         return {'success': False, 'reason': 'Unit size too small'}
 
-    # Check margin before placing order
+    # CASH TURTLE: Check settled cash before placing pyramid (no margin/leverage)
+    # This prevents margin calls by ensuring we only trade with cash we have
     notional_value = float(current_price) * unit_size
     try:
-        account_values = {v.tag: float(v.value) for v in ib.accountValues() if v.currency == 'USD'}
-        available_funds = account_values.get('AvailableFunds', 0)
-        buying_power = account_values.get('BuyingPower', 0)
-
-        # Need at least 25% of notional as available margin buffer
-        min_required = notional_value * 0.25
-        if available_funds < min_required:
-            logger.warning(f"  {symbol}: PYRAMID SKIPPED - insufficient margin")
-            logger.warning(f"    Need ${min_required:,.0f} available, have ${available_funds:,.0f}")
-            logger.warning(f"    Buying power: ${buying_power:,.0f}")
-            return {'success': False, 'reason': f'Insufficient margin: ${available_funds:,.0f} < ${min_required:,.0f}'}
+        account_values = {}
+        for v in ib.accountValues():
+            if v.currency == 'USD':
+                try:
+                    account_values[v.tag] = float(v.value)
+                except (ValueError, TypeError):
+                    pass
+        # Use SettledCash (not BuyingPower) to avoid margin dependency
+        settled_cash = account_values.get('SettledCash', account_values.get('TotalCashValue', 0))
+        if notional_value > settled_cash:
+            logger.warning(f"  {symbol}: PYRAMID SKIPPED - insufficient cash")
+            logger.warning(f"    Need ${notional_value:,.0f}, have ${settled_cash:,.0f}")
+            return {'success': False, 'reason': f'Insufficient cash: ${notional_value:,.0f} > ${settled_cash:,.0f}'}
+        logger.info(f"  {symbol}: Cash check OK - ${notional_value:,.0f} / ${settled_cash:,.0f} available")
     except Exception as e:
-        logger.warning(f"  {symbol}: Could not check margin: {e}")
-        # Continue anyway - IBKR will reject if truly insufficient
+        logger.warning(f"  {symbol}: Could not check cash: {e}")
+        # Block trade if we can't verify cash - safety first
+        return {'success': False, 'reason': f'Could not verify cash available: {e}'}
 
     # Create stock contract
     contract = Stock(symbol, 'SMART', 'USD')
@@ -218,12 +224,13 @@ async def execute_pyramid(
     # Place new stop order for TOTAL position (GTC so it persists)
     new_total_qty = current_quantity + filled_qty
     stop_action = 'SELL' if direction == Direction.LONG else 'BUY'
-    stop_order = StopOrder(stop_action, new_total_qty, float(new_stop))
+    rounded_stop = round(float(new_stop), 2)
+    stop_order = StopOrder(stop_action, new_total_qty, rounded_stop)
     stop_order.tif = 'GTC'  # Good Till Cancelled
     stop_order.outsideRth = True  # Trigger outside regular trading hours
     stop_trade = ib.placeOrder(contract, stop_order)
 
-    logger.info(f"  {symbol}: NEW STOP @ ${new_stop:.2f} for {new_total_qty} shares")
+    logger.info(f"  {symbol}: NEW STOP @ ${rounded_stop:.2f} for {new_total_qty} shares")
 
     # Log to alerts database
     if alert_logger:
@@ -496,6 +503,7 @@ async def run_monitoring_cycle(
     run_logger: RunLogger | None = None,
     event_logger: EventLogger | None = None,
     dry_run: bool = False,
+    check_stop_coverage: bool = True,
 ) -> list[dict]:
     """Run a single monitoring cycle.
 
@@ -506,6 +514,7 @@ async def run_monitoring_cycle(
         run_logger: Run logger for tracking monitoring runs
         event_logger: Event logger for audit trail
         dry_run: If True, detect signals but don't execute
+        check_stop_coverage: If True, verify stop coverage each cycle
     """
     logger.info("=" * 60)
     logger.info(f"MONITORING CYCLE - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -549,6 +558,51 @@ async def run_monitoring_cycle(
         )
         results.append(result)
 
+        # Log to run
+        if run and run_logger:
+            run_logger.add_monitor_check(
+                run=run,
+                symbol=pos['symbol'],
+                quantity=pos['quantity'],
+                entry_price=pos['avg_cost'],
+                current_price=result.get('current_price', 0),
+                stop_price=result.get('stop_price', 0),
+                exit_channel=result.get('exit_channel'),
+                pyramid_trigger=result.get('pyramid_trigger'),
+                action=result.get('action', 'error'),
+                reason=result.get('reason', result.get('error', 'Unknown')),
+                pnl=result.get('pnl', 0),
+                error=result.get('error'),
+            )
+
+        # Log event for every position check
+        if event_logger and 'error' not in result:
+            action_str = result.get('action', 'hold').upper()
+            outcome = OutcomeType.HOLD if action_str == 'HOLD' else OutcomeType.EXECUTED
+            await event_logger.log_position_checked(
+                symbol=pos['symbol'],
+                outcome=outcome,
+                outcome_reason=result.get('reason', 'Position OK'),
+                context=EventContext(
+                    position={
+                        'quantity': pos['quantity'],
+                        'entry_price': pos['avg_cost'],
+                        'stop_price': result.get('stop_price'),
+                        'units': result.get('units', 1),
+                        'pnl': result.get('pnl', 0),
+                    },
+                    market={
+                        'price': result.get('current_price'),
+                        'exit_low': result.get('exit_low'),
+                        'exit_high': result.get('exit_high'),
+                        'pyramid_trigger': result.get('pyramid_trigger'),
+                        'n_value': float(result.get('n_value', 0)) if result.get('n_value') else None,
+                    },
+                ),
+                price=result.get('current_price_decimal'),
+                direction=result.get('direction', Direction.LONG).value if result.get('direction') else None,
+            )
+
         if 'error' in result:
             logger.error(f"  {pos['symbol']}: ERROR - {result['error']}")
             continue
@@ -580,6 +634,36 @@ async def run_monitoring_cycle(
                     )
                     result['execution'] = exec_result
 
+                    # Log pyramid event
+                    if event_logger:
+                        if exec_result.get('success'):
+                            await event_logger.log_pyramid_filled(
+                                symbol=result['symbol'],
+                                fill_price=Decimal(str(exec_result['fill_price'])),
+                                fill_qty=exec_result['filled_qty'],
+                                new_total_qty=exec_result['new_total_qty'],
+                                new_units=result.get('units', 1) + 1,
+                                new_stop=Decimal(str(exec_result['new_stop'])),
+                                direction=result['direction'].value,
+                                context=EventContext(
+                                    position={'units': result.get('units', 1), 'contracts': abs(result['quantity'])},
+                                    account={'equity': float(exec_result.get('equity', 0))},
+                                ),
+                            )
+                        else:
+                            outcome = OutcomeType.INSUFFICIENT_CASH if 'cash' in exec_result.get('reason', '').lower() else OutcomeType.FAILED_ERROR
+                            await event_logger.log_pyramid_attempted(
+                                symbol=result['symbol'],
+                                outcome=outcome,
+                                outcome_reason=exec_result.get('reason', 'Pyramid failed'),
+                                context=EventContext(
+                                    position={'units': result.get('units', 1), 'contracts': abs(result['quantity'])},
+                                    market={'price': float(result['current_price'])},
+                                ),
+                                price=result['current_price_decimal'],
+                                direction=result['direction'].value,
+                            )
+
                 elif action in ('EXIT_STOP', 'EXIT_BREAKOUT'):
                     exec_result = await execute_exit(
                         ib=ib,
@@ -591,6 +675,36 @@ async def run_monitoring_cycle(
                         alert_logger=alert_logger,
                     )
                     result['execution'] = exec_result
+
+                    # Log exit event
+                    if event_logger:
+                        exit_type = 'stop' if action == 'EXIT_STOP' else 'breakout'
+                        if exec_result.get('success'):
+                            await event_logger.log_position_closed(
+                                symbol=result['symbol'],
+                                fill_price=Decimal(str(exec_result['fill_price'])),
+                                fill_qty=exec_result['filled_qty'],
+                                exit_type=exit_type,
+                                direction=result['direction'].value,
+                                realized_pnl=None,  # Not available at this point
+                                context=EventContext(
+                                    position={'units': result.get('units', 1), 'contracts': abs(result['quantity'])},
+                                    market={'price': float(result['current_price'])},
+                                ),
+                            )
+                        else:
+                            await event_logger.log_exit_attempted(
+                                symbol=result['symbol'],
+                                outcome=OutcomeType.FAILED_ERROR,
+                                outcome_reason=exec_result.get('reason', 'Exit failed'),
+                                context=EventContext(
+                                    position={'units': result.get('units', 1), 'contracts': abs(result['quantity'])},
+                                    market={'price': float(result['current_price'])},
+                                ),
+                                exit_type=exit_type,
+                                price=result['current_price_decimal'],
+                                direction=result['direction'].value,
+                            )
 
         # Update position snapshot if we have alert logging and significant change
         if position_repo and alert_logger and 'error' not in result:
@@ -665,21 +779,32 @@ async def run_monitoring_cycle(
         )
 
     logger.info("-" * 60)
+
+    # Complete run logging
+    if run and run_logger:
+        await run_logger.complete_run(run)
+        logger.info(f"Run logged: {run.summary}")
+
     return results
 
 
-async def verify_stops_on_startup(
+async def verify_stop_coverage(
     ib: IB,
     position_repo: PostgresOpenPositionRepository,
 ) -> int:
-    """Verify all positions have stop orders, place missing ones.
+    """Verify all positions have FULL stop coverage, fix partial stops.
 
-    CRITICAL: Every position MUST have a stop. This runs on startup to
-    catch any positions that lost their stops (e.g., after system restart).
+    CRITICAL: Every share MUST be protected by a stop. This runs on startup
+    and catches:
+    - Positions with no stops at all
+    - Positions with partial stops (e.g., 465 shares but stop only covers 213)
 
-    Returns number of stops placed.
+    This can happen when pyramid orders fill in batches while margin is tight,
+    leaving some shares unprotected.
+
+    Returns number of stops placed/fixed.
     """
-    logger.info("=== STARTUP STOP VERIFICATION ===")
+    logger.info("=== STARTUP STOP COVERAGE VERIFICATION ===")
 
     # Get all positions
     positions = ib.positions()
@@ -687,61 +812,86 @@ async def verify_stops_on_startup(
         logger.info("No positions to verify")
         return 0
 
-    # Get all existing stop orders
+    # Build position map: symbol -> (quantity, direction)
+    position_map = {}
+    for pos in positions:
+        if pos.position != 0:
+            symbol = pos.contract.symbol
+            qty = abs(int(pos.position))
+            direction = Direction.LONG if pos.position > 0 else Direction.SHORT
+            position_map[symbol] = {'qty': qty, 'direction': direction}
+
+    # Get all existing stop orders and sum quantities per symbol
     await ib.reqAllOpenOrdersAsync()
     await asyncio.sleep(0.5)
 
-    stops_by_symbol = {}
+    stop_coverage = {}  # symbol -> total stop quantity
+    stop_prices = {}    # symbol -> stop price (use first found)
     for t in ib.trades():
         if (t.order.orderType == 'STP' and
             t.orderStatus.status not in ('Cancelled', 'Inactive', 'Filled')):
-            stops_by_symbol[t.contract.symbol] = t
+            symbol = t.contract.symbol
+            qty = int(t.order.totalQuantity)
+            if symbol not in stop_coverage:
+                stop_coverage[symbol] = 0
+                stop_prices[symbol] = t.order.auxPrice
+            stop_coverage[symbol] += qty
 
-    # Check each position has a stop
+    # Check each position has FULL coverage
     stops_placed = 0
-    for pos in positions:
-        symbol = pos.contract.symbol
-        qty = abs(int(pos.position))
-        direction = Direction.LONG if pos.position > 0 else Direction.SHORT
+    for symbol, pos_info in position_map.items():
+        pos_qty = pos_info['qty']
+        direction = pos_info['direction']
+        covered_qty = stop_coverage.get(symbol, 0)
 
-        if symbol in stops_by_symbol:
-            stop = stops_by_symbol[symbol]
-            logger.info(f"  {symbol}: Stop exists @ ${stop.order.auxPrice:.2f}")
+        if covered_qty >= pos_qty:
+            logger.info(f"  {symbol}: ✓ Full coverage - {pos_qty} shares, stop covers {covered_qty}")
             continue
 
-        # No stop! Get stop price from database
-        logger.warning(f"  {symbol}: NO STOP FOUND - placing protective stop")
+        gap = pos_qty - covered_qty
+        if covered_qty == 0:
+            logger.warning(f"  {symbol}: ⚠️ NO STOP - {pos_qty} shares unprotected")
+        else:
+            logger.warning(f"  {symbol}: ⚠️ PARTIAL STOP - {pos_qty} shares, stop only covers {covered_qty} ({gap} unprotected)")
 
+        # Get stop price from existing stop or database
+        if symbol in stop_prices:
+            stop_price = stop_prices[symbol]
+        else:
+            try:
+                stored = await position_repo.get(symbol)
+                if stored and stored.stop_price:
+                    stop_price = float(stored.stop_price)
+                else:
+                    logger.error(f"  {symbol}: No stop price available - MANUAL INTERVENTION REQUIRED")
+                    continue
+            except Exception as e:
+                logger.error(f"  {symbol}: Failed to get stop price: {e}")
+                continue
+
+        # Place stop order for the gap
         try:
-            stored = await position_repo.get_position(symbol)
-            if stored and stored.stop_price:
-                stop_price = float(stored.stop_price)
-            else:
-                # Calculate from current price if not stored
-                logger.warning(f"  {symbol}: No stored stop price, using 2N estimate")
-                continue  # Skip - need manual intervention
-
-            # Place stop order
             contract = Stock(symbol, 'SMART', 'USD')
             await ib.qualifyContractsAsync(contract)
 
             stop_action = 'SELL' if direction == Direction.LONG else 'BUY'
-            stop_order = StopOrder(stop_action, qty, stop_price)
+            stop_order = StopOrder(stop_action, gap, round(stop_price, 2))
             stop_order.tif = 'GTC'
             stop_order.outsideRth = True
 
             ib.placeOrder(contract, stop_order)
-            logger.info(f"  {symbol}: Placed stop @ ${stop_price:.2f} for {qty} shares")
+            logger.info(f"  {symbol}: Placed stop @ ${stop_price:.2f} for {gap} shares (filling gap)")
             stops_placed += 1
             await asyncio.sleep(0.3)
 
         except Exception as e:
             logger.error(f"  {symbol}: Failed to place stop: {e}")
 
+    logger.info("=" * 40)
     if stops_placed > 0:
-        logger.info(f"Placed {stops_placed} missing stop(s)")
+        logger.info(f"Fixed {stops_placed} stop coverage gap(s)")
     else:
-        logger.info("All positions have stops")
+        logger.info("✓ All positions have full stop coverage")
 
     return stops_placed
 
@@ -760,6 +910,7 @@ async def main():
 
     # Initialize repositories for dashboard logging
     alert_repo = PostgresAlertRepository()
+    event_repo = PostgresEventRepository()
     position_repo = PostgresOpenPositionRepository()
     run_repo = PostgresRunRepository()
     event_repo = PostgresEventRepository()
@@ -778,9 +929,9 @@ async def main():
         logger.error("Make sure TWS is running with API connections enabled")
         return 1
 
-    # CRITICAL: Verify all positions have stops on startup
+    # CRITICAL: Verify all positions have FULL stop coverage on startup
     if not args.dry_run:
-        await verify_stops_on_startup(ib, position_repo)
+        await verify_stop_coverage(ib, position_repo)
 
     try:
         if args.once:

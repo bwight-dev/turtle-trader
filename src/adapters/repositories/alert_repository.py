@@ -8,7 +8,7 @@ from uuid import UUID
 from src.domain.interfaces.repositories import AlertRepository
 from src.domain.models.alert import Alert, AlertType
 from src.domain.models.enums import Direction, System
-from src.infrastructure.database import execute, fetch, fetchrow
+from src.infrastructure.database import execute, fetch, fetchrow, fetchval
 
 
 class PostgresAlertRepository(AlertRepository):
@@ -90,6 +90,30 @@ class PostgresAlertRepository(AlertRepository):
             """,
             alert_id,
         )
+
+    async def has_signal_today(
+        self,
+        symbol: str,
+        direction: Direction,
+        system: System,
+    ) -> bool:
+        """Check if an ENTRY_SIGNAL already exists today for this combination."""
+        result = await fetchval(
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM alerts
+                WHERE symbol = $1
+                AND direction = $2
+                AND system = $3
+                AND alert_type = 'ENTRY_SIGNAL'
+                AND timestamp::date = CURRENT_DATE
+            )
+            """,
+            symbol,
+            direction.value,
+            system.value,
+        )
+        return result
 
     def _row_to_alert(self, row) -> Alert:
         """Convert database row to Alert model."""
