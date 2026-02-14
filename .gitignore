@@ -71,6 +71,9 @@ logs/
 ehthumbs.db
 Thumbs.db
 
+# Git worktrees
+.worktrees/
+
 # Project specific
 *.bak
 *.tmp
