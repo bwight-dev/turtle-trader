@@ -43,7 +43,7 @@ from src.domain.models.market import Bar, NValue
 from src.domain.models.portfolio import Portfolio
 from src.domain.models.position import Position, PyramidLevel
 from src.domain.models.signal import Signal
-from src.domain.rules import RISK_PER_TRADE
+from src.domain.rules import RISK_PER_TRADE, MAX_CAPITAL_PER_POSITION
 from src.domain.services.channels import calculate_all_channels
 from src.domain.services.limit_checker import LimitChecker
 from src.domain.services.s1_filter import S1Filter
@@ -207,6 +207,17 @@ async def execute_entry(
         logger.warning(f"  {symbol}: Could not check cash: {e}")
         # Block trade if we can't verify cash - safety first
         return {"success": False, "reason": f"Could not verify cash available: {e}"}
+
+    # CAPITAL CAP: Limit any single position to 25% of equity
+    max_position_value = float(equity) * float(MAX_CAPITAL_PER_POSITION)
+    if notional_value > max_position_value:
+        capped_size = int(max_position_value / float(current_price))
+        if capped_size < 1:
+            logger.warning(f"  {symbol}: SKIPPED - capital cap too small for even 1 share")
+            return {"success": False, "reason": f"Capital cap: even 1 share exceeds cap"}
+        logger.info(f"  {symbol}: Capital cap applied - {unit_size} -> {capped_size} shares ({float(MAX_CAPITAL_PER_POSITION):.0%} of equity = ${max_position_value:,.0f})")
+        unit_size = capped_size
+        notional_value = float(current_price) * unit_size
 
     # Create contract
     contract = Stock(symbol, "SMART", "USD")
@@ -564,8 +575,8 @@ async def main(
             sig_price = Decimal(str(sig["price"]))
 
             # Build context for event logging
-            signal_context = EventContext(
-                market={
+            signal_context = {
+                "market": {
                     "price": float(sig_price),
                     "n_value": result.get("n_value"),
                     "dc20_upper": result.get("dc20_upper"),
@@ -574,20 +585,19 @@ async def main(
                     "dc55_lower": result.get("dc55_lower"),
                     "channel_value": sig["channel"],
                 },
-                portfolio={
+                "portfolio": {
                     "total_units": portfolio.total_units,
                     "positions": list(existing_symbols),
                 },
-            )
+            }
 
             # Log signal detection event
-            signal_event = await event_logger.log_signal_detected(
+            signal_event = await event_logger.log(
+                EventType.SIGNAL_DETECTED,
+                OutcomeType.BREAKOUT_20 if system == System.S1 else OutcomeType.BREAKOUT_55,
                 symbol=symbol,
-                price=sig_price,
-                direction=direction.value,
-                system=system.value,
+                outcome_reason=f"{system.value} {direction.value} breakout at {sig_price}",
                 context=signal_context,
-                signal_details={"signal_type": sig["type"]},
             )
 
             # Apply S1 filter for S1 signals (Rule 7)
@@ -603,30 +613,24 @@ async def main(
 
                 if not filter_result.take_signal:
                     print(f"    {system.value} {direction.value.upper()} FILTERED: {filter_result.reason}")
-                    await event_logger.log_signal_evaluated(
+                    await event_logger.log(
+                        EventType.SIGNAL_EVALUATED,
+                        OutcomeType.FILTERED_S1,
                         symbol=symbol,
-                        outcome=OutcomeType.FILTERED_S1,
                         outcome_reason=filter_result.reason,
                         context=signal_context,
-                        related_signal_id=signal_event.id,
-                        direction=direction.value,
-                        system=system.value,
-                        price=sig_price,
                     )
                     continue
 
             # Check if we already have a position
             if symbol in existing_symbols:
                 print(f"    {system.value} {direction.value.upper()} SKIPPED: Already have position in {symbol}")
-                await event_logger.log_signal_evaluated(
+                await event_logger.log(
+                    EventType.SIGNAL_EVALUATED,
+                    OutcomeType.ALREADY_IN_POSITION,
                     symbol=symbol,
-                    outcome=OutcomeType.ALREADY_POSITIONED,
                     outcome_reason=f"Already have position in {symbol}",
                     context=signal_context,
-                    related_signal_id=signal_event.id,
-                    direction=direction.value,
-                    system=system.value,
-                    price=sig_price,
                 )
                 continue
 
@@ -642,28 +646,22 @@ async def main(
                         outcome = OutcomeType.LIMIT_CORRELATED
                     else:
                         outcome = OutcomeType.LIMIT_TOTAL
-                    await event_logger.log_signal_evaluated(
+                    await event_logger.log(
+                        EventType.SIGNAL_EVALUATED,
+                        outcome,
                         symbol=symbol,
-                        outcome=outcome,
                         outcome_reason=reason,
                         context=signal_context,
-                        related_signal_id=signal_event.id,
-                        direction=direction.value,
-                        system=system.value,
-                        price=sig_price,
                     )
                     continue
 
             # Signal passed all filters - log as actionable
-            eval_event = await event_logger.log_signal_evaluated(
+            eval_event = await event_logger.log(
+                EventType.SIGNAL_EVALUATED,
+                OutcomeType.APPROVED,
                 symbol=symbol,
-                outcome=OutcomeType.EXECUTED,
                 outcome_reason="Signal passed all filters, queued for execution",
                 context=signal_context,
-                related_signal_id=signal_event.id,
-                direction=direction.value,
-                system=system.value,
-                price=sig_price,
             )
 
             # Log signal to database (always, even if not executing)
@@ -725,14 +723,12 @@ async def main(
                     print(f"  {sig['symbol']}: SUCCESS - {exec_result['filled_qty']} shares "
                           f"@ ${exec_result['fill_price']:.2f}, stop @ ${exec_result['stop_price']:.2f}")
                     # Log position opened
-                    await event_logger.log_position_opened(
+                    await event_logger.log(
+                        EventType.ENTRY_FILLED,
+                        OutcomeType.SUBMITTED,
                         symbol=sig["symbol"],
-                        fill_price=Decimal(str(exec_result["fill_price"])),
-                        fill_qty=exec_result["filled_qty"],
-                        direction=sig["direction"].value,
-                        system=sig["system"].value,
+                        outcome_reason=f"Filled {exec_result['filled_qty']} shares @ ${exec_result['fill_price']:.2f}",
                         context=sig.get("context", {}),
-                        related_event_id=sig.get("eval_event_id"),
                     )
                 else:
                     print(f"  {sig['symbol']}: FAILED - {exec_result['reason']}")
@@ -740,22 +736,16 @@ async def main(
                     reason = exec_result.get("reason", "Unknown error")
                     if "cash" in reason.lower():
                         outcome = OutcomeType.INSUFFICIENT_CASH
-                    elif "unit" in reason.lower() and "small" in reason.lower():
-                        outcome = OutcomeType.UNIT_TOO_SMALL
-                    elif "timeout" in reason.lower():
-                        outcome = OutcomeType.FAILED_TIMEOUT
+                    elif "capital cap" in reason.lower():
+                        outcome = OutcomeType.CAPITAL_CAP_EXCEEDED
                     else:
-                        outcome = OutcomeType.FAILED_ERROR
-                    await event_logger.log_entry_attempted(
+                        outcome = OutcomeType.REJECTED
+                    await event_logger.log(
+                        EventType.ENTRY_ATTEMPTED,
+                        outcome,
                         symbol=sig["symbol"],
-                        outcome=outcome,
                         outcome_reason=reason,
                         context=sig.get("context", {}),
-                        outcome_details={"error": reason},
-                        related_event_id=sig.get("eval_event_id"),
-                        direction=sig["direction"].value,
-                        system=sig["system"].value,
-                        price=sig["price"],
                     )
 
     # Summary

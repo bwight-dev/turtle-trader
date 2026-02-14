@@ -92,6 +92,7 @@ class OutcomeType(str, Enum):
     LIMIT_TOTAL = "limit_total"      # 12 units total (original mode)
     LIMIT_RISK_CAP = "limit_risk_cap"  # 20% risk cap (Rule 17)
     ALREADY_IN_POSITION = "already_in_position"  # Already have position
+    CAPITAL_CAP_EXCEEDED = "capital_cap_exceeded"  # Position would exceed max capital %
 
     # === Order Submission Outcomes ===
     SUBMITTED = "submitted"          # Order sent to broker

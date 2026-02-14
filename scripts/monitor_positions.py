@@ -49,14 +49,14 @@ from src.application.commands.log_event import (
 from src.application.commands.log_run import RunLogger
 from src.domain.models.event import EventType, OutcomeType
 from src.domain.models.alert import AlertType, OpenPositionSnapshot
-from src.domain.models.event import EventContext, EventType, OutcomeType
+from src.domain.models.event import EventType, OutcomeType
 from src.domain.models.market import Bar, NValue
 from src.domain.models.position import Position, PyramidLevel
 from src.domain.models.enums import Direction, System
 from src.domain.services.position_monitor import PositionMonitor
 from src.domain.services.volatility import calculate_n
 from src.domain.services.channels import calculate_donchian
-from src.domain.rules import RISK_PER_TRADE
+from src.domain.rules import RISK_PER_TRADE, MAX_CAPITAL_PER_POSITION
 
 # Configure logging
 logging.basicConfig(
@@ -168,6 +168,23 @@ async def execute_pyramid(
         logger.warning(f"  {symbol}: Could not check cash: {e}")
         # Block trade if we can't verify cash - safety first
         return {'success': False, 'reason': f'Could not verify cash available: {e}'}
+
+    # CAPITAL CAP: Block pyramid if position already at/over 25% of equity
+    existing_value = float(current_price) * current_quantity
+    max_position_value = float(equity) * float(MAX_CAPITAL_PER_POSITION)
+    if existing_value >= max_position_value:
+        logger.warning(f"  {symbol}: PYRAMID SKIPPED - capital cap (${existing_value:,.0f} >= ${max_position_value:,.0f})")
+        return {'success': False, 'reason': f'Capital cap: ${existing_value:,.0f} >= ${max_position_value:,.0f}'}
+    # If there's room, cap the pyramid size to fit
+    room = max_position_value - existing_value
+    if notional_value > room:
+        capped_size = int(room / float(current_price))
+        if capped_size < 1:
+            logger.warning(f"  {symbol}: PYRAMID SKIPPED - not enough room in capital cap")
+            return {'success': False, 'reason': f'Capital cap: only ${room:,.0f} room, need ${notional_value:,.0f}'}
+        logger.info(f"  {symbol}: Pyramid capped - {unit_size} -> {capped_size} shares (${room:,.0f} room in cap)")
+        unit_size = capped_size
+        notional_value = float(current_price) * unit_size
 
     # Create stock contract
     contract = Stock(symbol, 'SMART', 'USD')
@@ -579,28 +596,24 @@ async def run_monitoring_cycle(
         if event_logger and 'error' not in result:
             action_str = result.get('action', 'hold').upper()
             outcome = OutcomeType.HOLD if action_str == 'HOLD' else OutcomeType.EXECUTED
-            await event_logger.log_position_checked(
+            await event_logger.log(
+                EventType.POSITION_CHECKED,
+                outcome,
                 symbol=pos['symbol'],
-                outcome=outcome,
                 outcome_reason=result.get('reason', 'Position OK'),
-                context=EventContext(
-                    position={
+                context={
+                    'position': {
                         'quantity': pos['quantity'],
                         'entry_price': pos['avg_cost'],
                         'stop_price': result.get('stop_price'),
                         'units': result.get('units', 1),
                         'pnl': result.get('pnl', 0),
                     },
-                    market={
+                    'market': {
                         'price': result.get('current_price'),
-                        'exit_low': result.get('exit_low'),
-                        'exit_high': result.get('exit_high'),
-                        'pyramid_trigger': result.get('pyramid_trigger'),
                         'n_value': float(result.get('n_value', 0)) if result.get('n_value') else None,
                     },
-                ),
-                price=result.get('current_price_decimal'),
-                direction=result.get('direction', Direction.LONG).value if result.get('direction') else None,
+                },
             )
 
         if 'error' in result:
@@ -637,31 +650,27 @@ async def run_monitoring_cycle(
                     # Log pyramid event
                     if event_logger:
                         if exec_result.get('success'):
-                            await event_logger.log_pyramid_filled(
+                            await event_logger.log(
+                                EventType.PYRAMID_FILLED,
+                                OutcomeType.SUBMITTED,
                                 symbol=result['symbol'],
-                                fill_price=Decimal(str(exec_result['fill_price'])),
-                                fill_qty=exec_result['filled_qty'],
-                                new_total_qty=exec_result['new_total_qty'],
-                                new_units=result.get('units', 1) + 1,
-                                new_stop=Decimal(str(exec_result['new_stop'])),
-                                direction=result['direction'].value,
-                                context=EventContext(
-                                    position={'units': result.get('units', 1), 'contracts': abs(result['quantity'])},
-                                    account={'equity': float(exec_result.get('equity', 0))},
-                                ),
+                                outcome_reason=f"Filled {exec_result['filled_qty']} shares @ ${exec_result['fill_price']:.2f}",
+                                context={'position': {'units': result.get('units', 1), 'contracts': abs(result['quantity'])}},
                             )
                         else:
-                            outcome = OutcomeType.INSUFFICIENT_CASH if 'cash' in exec_result.get('reason', '').lower() else OutcomeType.FAILED_ERROR
-                            await event_logger.log_pyramid_attempted(
+                            reason = exec_result.get('reason', '')
+                            if 'cash' in reason.lower():
+                                outcome = OutcomeType.INSUFFICIENT_CASH
+                            elif 'capital cap' in reason.lower():
+                                outcome = OutcomeType.CAPITAL_CAP_EXCEEDED
+                            else:
+                                outcome = OutcomeType.REJECTED
+                            await event_logger.log(
+                                EventType.PYRAMID_ATTEMPTED,
+                                outcome,
                                 symbol=result['symbol'],
-                                outcome=outcome,
                                 outcome_reason=exec_result.get('reason', 'Pyramid failed'),
-                                context=EventContext(
-                                    position={'units': result.get('units', 1), 'contracts': abs(result['quantity'])},
-                                    market={'price': float(result['current_price'])},
-                                ),
-                                price=result['current_price_decimal'],
-                                direction=result['direction'].value,
+                                context={'position': {'units': result.get('units', 1), 'contracts': abs(result['quantity'])}},
                             )
 
                 elif action in ('EXIT_STOP', 'EXIT_BREAKOUT'):
@@ -680,30 +689,20 @@ async def run_monitoring_cycle(
                     if event_logger:
                         exit_type = 'stop' if action == 'EXIT_STOP' else 'breakout'
                         if exec_result.get('success'):
-                            await event_logger.log_position_closed(
+                            await event_logger.log(
+                                EventType.EXIT_FILLED,
+                                OutcomeType.SUBMITTED,
                                 symbol=result['symbol'],
-                                fill_price=Decimal(str(exec_result['fill_price'])),
-                                fill_qty=exec_result['filled_qty'],
-                                exit_type=exit_type,
-                                direction=result['direction'].value,
-                                realized_pnl=None,  # Not available at this point
-                                context=EventContext(
-                                    position={'units': result.get('units', 1), 'contracts': abs(result['quantity'])},
-                                    market={'price': float(result['current_price'])},
-                                ),
+                                outcome_reason=f"Exit {exit_type}: {exec_result['filled_qty']} shares @ ${exec_result['fill_price']:.2f}",
+                                context={'position': {'units': result.get('units', 1), 'contracts': abs(result['quantity'])}},
                             )
                         else:
-                            await event_logger.log_exit_attempted(
+                            await event_logger.log(
+                                EventType.EXIT_ATTEMPTED,
+                                OutcomeType.REJECTED,
                                 symbol=result['symbol'],
-                                outcome=OutcomeType.FAILED_ERROR,
                                 outcome_reason=exec_result.get('reason', 'Exit failed'),
-                                context=EventContext(
-                                    position={'units': result.get('units', 1), 'contracts': abs(result['quantity'])},
-                                    market={'price': float(result['current_price'])},
-                                ),
-                                exit_type=exit_type,
-                                price=result['current_price_decimal'],
-                                direction=result['direction'].value,
+                                context={'position': {'units': result.get('units', 1), 'contracts': abs(result['quantity'])}},
                             )
 
         # Update position snapshot if we have alert logging and significant change

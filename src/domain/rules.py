@@ -102,6 +102,11 @@ MAX_TOTAL_RISK: Final[Decimal] = Decimal("0.20")  # 20% of equity
 # Set to True for 228+ market universe, False for original 20-market validation
 USE_RISK_CAP_MODE: Final[bool] = True
 
+# Capital concentration limit (stocks/ETFs adaptation)
+# Futures margin ~5%, stocks 100% cash. Cap prevents one position consuming all cash.
+# 25% = room for ~4 diversified positions, allows 1 unit of most ETFs
+MAX_CAPITAL_PER_POSITION: Final[Decimal] = Decimal("0.25")  # 25% of equity
+
 
 # =============================================================================
 # HELPER FUNCTIONS
