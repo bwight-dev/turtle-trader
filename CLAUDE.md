@@ -4,235 +4,475 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a **Turtle Trading System** implementation in Python - an automated trend-following trading strategy based on the legendary Turtle Trading methodology. The system tracks 20 symbols (10 ETFs + 10 stocks), generates BUY/SELL signals based on Donchian Channel breakouts (55-day entry, 20-day exit), manages position sizing using ATR and 2% risk rule, and tracks portfolio performance.
+Turtle Trading Bot is a Python algorithmic trading system implementing classic Turtle Trading rules with modern adaptations. The project is currently in **active implementation** phase.
 
-**Key Trading Rules:**
-- **Entry Signal:** LONG when price breaks above 55-day high, SHORT when price breaks below 55-day low
-- **Exit Signal:** Exit LONG when price breaks below 20-day low, exit SHORT when price breaks above 20-day high
-- **Position Sizing:** Risk 2% of account value per trade, calculated as: shares = (account × 0.02) / (ATR × 2)
-- **Stop Loss:** Entry price ± (2 × ATR)
-- **Maximum Positions:** 6 concurrent positions (12% total portfolio risk)
+## Implementation Progress (as of 2026-02-12)
 
-## Architecture
+**499 tests passing** (451 unit + 48 integration, 4 skipped)
 
-### Core Trading Loop
-The system follows a daily workflow orchestrated by `main.py`:
-1. **Data Update** (`src/data_fetcher.py`) - Fetch latest OHLCV data from Yahoo Finance
-2. **Signal Calculation** (`src/signals.py`) - Calculate Donchian Channels and detect breakouts
-3. **Position Sizing** (`src/position_sizing.py`) - Calculate ATR and determine proper share quantities
-4. **Portfolio Management** (`src/portfolio.py`) - Track open positions, calculate P&L, maintain trade history
-5. **Alerts** (`src/alerts.py`) - Send notifications via email or Slack (optional)
+| Phase | Milestones | Status |
+|-------|------------|--------|
+| Foundation | M1-M4 | ✓ Complete |
+| Market Data | M5-M8 | ✓ Complete |
+| Strategy | M9-M11 | ✓ Complete |
+| Portfolio | M12-M17 | ✓ Complete |
+| Execution | M18-M21 | ✓ Complete |
+| Integration | M22-M25 | ✓ Complete |
+| **Live Testing** | Paper trading | ✓ Active |
+| **Event Streaming** | Audit trail | ✓ Complete |
 
-### Dual Trading Modes
-The system supports both **PAPER** (practice) and **REAL** trading modes, tracked separately in the database:
-- All functions accept `trade_type` parameter ('PAPER' or 'REAL')
-- Default mode is PAPER for safety
-- Account balances, positions, and trade history are isolated per mode
-- Use `--real` flag with main.py to operate in REAL mode
+**All 25 milestones complete!** Now in live paper trading on IBKR with full event audit trail.
 
-### Database Architecture
-Two SQLite databases store system data:
+### Current Status
+- **Paper Account**: DUP318628 (IBKR)
+- **Position Monitor**: Running via launchd (every 60s)
+- **Daily Scanner**: Every hour :30, 7:30 AM-3:30 PM Mon-Fri (9 runs/day)
+- **Discord Alerts**: Webhook notifications for signals
+- **Event Streaming**: Full audit trail with context capture
+- **Cash Turtle Mode**: No margin/leverage - trades only with settled cash
+- **Open Positions** (as of 2026-02-12):
+  - XLE LONG: 951 shares @ $53.40, stop @ $51.35
+  - XLU LONG: 1192 shares @ $44.99, stop @ $43.65
 
-**`data/prices.db`** - Historical price data
-- One table per symbol (e.g., `SPY`, `AAPL`)
-- Schema: date (PRIMARY KEY), open, high, low, close, volume
-- Updated daily via `src/data_fetcher.py`
+### Completed Components:
+- **M1**: Project setup + Neon PostgreSQL connection
+- **M2**: IBKR TWS connection with ib_insync
+- **M3**: Core Pydantic models (Position, Portfolio, Signal, Trade, etc.)
+- **M4**: N (ATR) calculator with Wilder's smoothing
+- **M5**: Donchian channel calculator (10/20/55-day)
+- **M6**: Yahoo Finance backup feed
+- **M7**: Composite feed with automatic failover
+- **M8**: N value persistence (PostgresNValueRepository)
+- **M9**: S1/S2 signal detector (breakout detection)
+- **M10**: S1 filter with trade history (Rule 7)
+- **M11**: Market scanner use case
+- **M12**: LangGraph workflow skeleton
+- **M13**: Position model with pyramid tracking (done in M3)
+- **M14**: Unit size calculator + drawdown tracker (Rule 5)
+- **M15**: Limit checker - 4/6/12 unit limits (21 tests)
+- **M16**: Position monitor - stop hit detection (Rule 10)
+- **M17**: Position monitor - breakout exits + pyramids (Rules 11-14)
+- **M18**: Broker interface + Paper broker (29 tests)
+- **M19**: IBKR broker adapter (integration tests)
+- **M20**: ModifyStopCommand + SyncPortfolioQuery (18 tests)
+- **M21**: ReconcileAccountQuery (15 tests)
+- **M22**: TradeLogger command (15 tests)
+- **M23**: DailyWorkflow LangGraph orchestration (17 tests)
+- **M24**: MonitoringLoop continuous position monitor (19 tests)
+- **M25**: Docker deployment (Dockerfile, docker-compose, deploy.sh - 21 tests)
 
-**`data/trades.db`** - Portfolio and trade tracking
-- `positions` table: All trades (open/closed) with trade_type, symbol, direction, entry/exit prices, P&L
-- `accounts` table: Current account balances for PAPER and REAL modes
-- `account_history` table: Historical account values for equity curve
+**Core Principle**: Mechanical execution with zero discretion once rules are defined.
 
-### Signal Detection Flow
-Signals are calculated in `src/signals.py`:
-1. `get_current_levels(symbol)` - Fetches last 60 days of price data, calculates both 55-day and 20-day Donchian Channels
-2. `check_breakout(symbol)` - Compares current price to channels, returns signal type (BUY/SELL/EXIT_LONG/EXIT_SHORT/NONE)
-3. `scan_all_symbols(open_positions)` - Scans all watchlist symbols, prioritizes exit signals for open positions
+## Technology Stack
 
-**Critical:** The system tracks entry signals (55-day breakout) separately from exit signals (20-day breakout). Exit signals only trigger for currently held positions.
+- **Python 3.12+** with Pydantic v2 for type safety
+- **Interactive Brokers** (ib_insync) - primary data source and execution
+- **Yahoo Finance** (yfinance) - backup data source with automatic failover
+- **Neon PostgreSQL** (cloud) - trade history, audit logs, N value persistence
+- **Discord Webhooks** - real-time signal notifications
+- **In-memory caching** (Redis deferred) - real-time price cache
+- **LangGraph** - workflow orchestration from the start
+- **Docker on Unraid** - deployment target
 
-### Position Sizing Logic
-Implemented in `src/position_sizing.py`:
-1. `calculate_atr(dataframe, period=20)` - Calculates Average True Range using max(High-Low, abs(High-Close_prev), abs(Low-Close_prev))
-2. `get_position_size(symbol, entry_price, account_value)` - Returns position details including:
-   - Stop distance = ATR × 2
-   - Risk amount = account_value × 2%
-   - Shares = risk_amount / stop_distance (rounded down)
-3. `validate_position_size(position, account_value, open_positions)` - Ensures sufficient capital and doesn't exceed max positions
+## Discord Notifications
 
-## Common Commands
+Signals are sent to Discord via webhook when detected by the daily scanner.
 
-### Running the Trading System
+**Setup:**
 ```bash
-# Run daily scan immediately (paper trading)
-python main.py --now
-
-# Run daily scan immediately (real trading)
-python main.py --now --real
-
-# Schedule daily scans at 4:15 PM ET (paper trading)
-python main.py --schedule
-
-# Schedule daily scans at 4:15 PM ET (real trading)
-python main.py --schedule --real
+# Add to .env
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR_WEBHOOK_URL
 ```
 
-### Running the Dashboard
+**Implementation:** `src/infrastructure/discord.py`
+- Sends formatted embeds for ENTRY_SIGNAL alerts
+- Called from `AlertLogger.log_signal()` in `src/application/commands/log_alert.py`
+
+## Database
+
 ```bash
-# Launch web dashboard (opens at http://localhost:8501)
-streamlit run dashboard.py
-
-# The dashboard provides:
-# - Current signals with position sizing recommendations
-# - Open positions with unrealized P&L
-# - Performance metrics and trading statistics
-# - Trade history with filters
-# - Interactive price charts with Donchian Channels
+# Neon PostgreSQL (cloud-hosted)
+DATABASE_URL=postgresql://neondb_owner:npg_ipM4O8DGaeBP@ep-autumn-morning-afn6oh1a-pooler.c-2.us-west-2.aws.neon.tech/neondb?sslmode=require
 ```
 
-### Helper Scripts (in `scripts/` directory)
+### Dashboard Tables
+
+Three tables support the website dashboard:
+
+**`alerts`** - Immutable event log for trading signals and actions:
+- `ENTRY_SIGNAL` - Breakout signal detected
+- `POSITION_OPENED` - Order filled, position established
+- `POSITION_CLOSED` - Position fully exited
+- `EXIT_STOP` - 2N stop hit
+- `EXIT_BREAKOUT` - Donchian exit triggered
+- `PYRAMID_TRIGGER` - Pyramid level reached
+
+**`open_positions`** - Current state of open positions (upserted on significant changes)
+
+**`events`** - Full audit trail with context capture (see Event Streaming below)
+
+Query examples:
+```sql
+-- All open positions for dashboard
+SELECT * FROM open_positions ORDER BY entry_date;
+
+-- Recent alerts (last 24h)
+SELECT * FROM alerts WHERE timestamp > NOW() - INTERVAL '24 hours' ORDER BY timestamp DESC;
+
+-- Unacknowledged count for notification badge
+SELECT COUNT(*) FROM alerts WHERE acknowledged = FALSE;
+
+-- Recent events with outcomes
+SELECT timestamp, event_type, outcome, symbol FROM events ORDER BY timestamp DESC LIMIT 20;
+```
+
+### Event Streaming (Audit Trail)
+
+The events table captures every trading decision with full context for replay and debugging.
+
+**Event Types (17):**
+- Scanner: `scanner_started`, `signal_detected`, `signal_evaluated`, `entry_attempted`, `entry_filled`, `scanner_completed`
+- Monitor: `monitor_started`, `position_checked`, `exit_attempted`, `exit_filled`, `pyramid_attempted`, `pyramid_filled`, `stop_modified`, `monitor_completed`
+- System: `connection_lost`, `connection_restored`, `error_occurred`
+
+**Outcomes:**
+- Position: `hold`, `exit_stop_triggered`, `exit_breakout_triggered`, `pyramid_triggered`
+- Signals: `approved`, `filtered_s1`, `limit_market`, `limit_correlated`, `limit_total`, `limit_risk_cap`
+- Entry: `breakout_20`, `breakout_55`
+- System: `completed`, `completed_with_errors`, `recovered`, `fatal`
+
+**Context Capture (The Five Questions):**
+Every event captures full state needed to replay the decision:
+- **Price**: Current market price, OHLCV
+- **Volatility (N)**: ATR value, calculation date, period
+- **Equity**: Actual vs notional, drawdown status
+- **System**: S1 or S2, direction
+- **Risk**: Position size, stop distance, units
+
+**Implementation:**
+- Model: `src/domain/models/event.py`
+- Repository: `src/adapters/repositories/event_repository.py`
+- Logger: `src/application/commands/log_event.py`
+- Migration: `src/infrastructure/migrations/007_create_events_table.sql`
+- Design: `docs/plans/2026-02-12-event-streaming-design.md`
+
+## Build & Development Commands
+
 ```bash
-# Update price data for all symbols
-python scripts/update_data.py
+# Database setup
+python scripts/setup_db.py
 
-# Check current signals
-python scripts/check_signals.py
+# Import TOS trading history
+python scripts/import_tos.py
 
-# View portfolio status
-python scripts/view_portfolio.py
+# Backfill existing position to alerts database
+python scripts/backfill_position.py
 
-# View trade history
-python scripts/view_history.py
+# Daily run (signal scanner - logs to alerts table)
+python scripts/daily_run.py
 
-# View price data for a symbol
-python scripts/view_prices.py SPY
+# Position monitor (single check - updates open_positions table)
+python scripts/monitor_positions.py --once
 
-# Calculate position size for a potential trade
-python scripts/calculate_position.py SPY 685.00
+# Backtest
+python scripts/backtest.py --equity 50000 --symbols SPY QQQ IWM --start 2020-01-01
 
-# Add sample paper trades for testing
-python scripts/add_paper_trades.py
+# Status dashboard
+python scripts/status.py
+
+# Tests
+pytest tests/unit/
+pytest tests/integration/
+pytest tests/backtest/
+
+# Note: When position monitor is running, some IBKR integration tests
+# will show "client id already in use" errors - these are not real failures.
+# Stop the monitor first for clean test runs:
+#   launchctl unload ~/Library/LaunchAgents/com.turtle.monitor.plist
 ```
 
-### Testing and Development
+## Scheduled Tasks (launchd)
+
+Two scheduled tasks run on macOS via launchd.
+
+### Task Configuration
+
+| Task | Schedule (Pacific) | Script | Log File |
+|------|----------|--------|----------|
+| Market Scanner | Every hour :30, 7:30 AM–3:30 PM Mon-Fri | `scripts/daily_run.py` | `logs/daily.log` |
+| Position Monitor | Every 60 seconds (continuous) | `scripts/monitor_positions.py` | `logs/monitor.error.log` |
+
+**Scanner runs 9 times per day** (every hour on the :30):
+- 7:30 AM PT (10:30 AM ET) through 3:30 PM PT (6:30 PM ET)
+- Covers pre-market through after close
+
+Duplicate signals are automatically deduplicated - only one alert per symbol/direction/system per day.
+
+### Plist Locations
+```
+~/Library/LaunchAgents/com.turtle.daily.plist
+~/Library/LaunchAgents/com.turtle.monitor.plist
+```
+
+### Quick Monitoring Commands
+
 ```bash
-# Activate virtual environment
-source venv/bin/activate
+# Check job status
+launchctl list | grep turtle
 
-# Install/update dependencies
-pip install yfinance pandas numpy pandas-ta schedule streamlit plotly
+# Watch position monitor in real-time
+tail -f logs/monitor.error.log
 
-# Run backtest (when implemented)
-python src/backtest.py --start 2024-01-01 --end 2024-12-31
+# Watch daily scanner
+tail -f logs/daily.error.log
 
-# Initialize database tables
-python -c "from src.portfolio import init_portfolio_db; init_portfolio_db()"
+# Status dashboard (positions, jobs, logs)
+python scripts/status.py
+
+# Stop/start monitor
+launchctl unload ~/Library/LaunchAgents/com.turtle.monitor.plist
+launchctl load ~/Library/LaunchAgents/com.turtle.monitor.plist
 ```
 
-## Important Configuration
-
-All configuration is centralized in `config.py`:
-- `INITIAL_CAPITAL` - Starting account balance
-- `RISK_PER_TRADE` - Risk percentage (default 0.02 = 2%)
-- `MAX_POSITIONS` - Maximum concurrent positions (default 6)
-- `ALL_SYMBOLS` - List of 20 tracked symbols (10 ETFs + 10 stocks)
-- `ENTRY_PERIOD` - Donchian breakout period for entries (default 55)
-- `EXIT_PERIOD` - Donchian breakout period for exits (default 20)
-- `ATR_PERIOD` - ATR calculation period (default 20)
-- `ATR_MULTIPLIER` - Stop loss distance multiplier (default 2)
-- `SCAN_TIME` - Daily scan time in ET (default '16:15')
-
-## Key Design Patterns
-
-### Error Handling
-- All data fetching functions retry failed downloads (3 attempts)
-- Database operations use try/except with graceful degradation
-- Failed symbol updates don't halt the entire scan
-- All functions return success/failure indicators with reasons
-
-### Data Caching
-- Dashboard uses `@st.cache_data` with TTL to avoid redundant database queries
-- Price data cached for 60 seconds
-- Portfolio data cached for 5 seconds (faster refresh)
-- Historical data cached for 5 minutes
-
-### Type Safety
-- Functions use type hints: `def function(param: str) -> dict:`
-- Return types are documented in docstrings
-- Optional types used for nullable returns: `Optional[Dict]`
-
-## Development Notes
-
-### When Adding New Symbols
-1. Add symbol to `WATCHLIST_ETFS` or `WATCHLIST_STOCKS` in `config.py`
-2. Run `python scripts/update_data.py` to fetch historical data
-3. The symbol will automatically be included in scans
-
-### When Modifying Trading Logic
-- **Signal calculation:** Edit `src/signals.py`
-- **Position sizing:** Edit `src/position_sizing.py`
-- **Stop loss rules:** Edit ATR calculation or multiplier in `config.py`
-- **Entry/exit periods:** Change `ENTRY_PERIOD` and `EXIT_PERIOD` in `config.py`
-
-### When Working with the Database
-- Use context managers for connections: `with sqlite3.connect(DB_PATH) as conn:`
-- Always close connections after queries
-- Use parameterized queries to prevent SQL injection: `cursor.execute(query, params=(value,))`
-- Tables are created automatically via `init_portfolio_db()`
-
-### Testing the System
-- Start with paper trading mode (default)
-- Use `scripts/add_paper_trades.py` to create sample trades for dashboard testing
-- Run `python main.py --now` after market close (4:00 PM ET) for real signals
-- Verify position sizing calculations with `scripts/calculate_position.py`
-
-## File Organization
-
+### Monitor Output Example
 ```
-turtle-trader/
-├── config.py              # Central configuration
-├── main.py                # Main trading system orchestrator
-├── dashboard.py           # Streamlit web dashboard
-├── requirements.md        # Detailed build requirements
-├── src/
-│   ├── data_fetcher.py    # Yahoo Finance data downloader
-│   ├── signals.py         # Donchian Channel and signal detection
-│   ├── position_sizing.py # ATR calculation and position sizing
-│   ├── portfolio.py       # Position tracking and P&L calculation
-│   ├── alerts.py          # Email/Slack notifications
-│   └── backtest.py        # Backtesting module (optional)
-├── scripts/               # Utility scripts for common tasks
-├── data/                  # SQLite databases (created automatically)
-│   ├── prices.db          # Historical price data
-│   └── trades.db          # Portfolio and trade history
-└── venv/                  # Python virtual environment
+[Cycle 5]
+============================================================
+MONITORING CYCLE - 2026-01-29 13:15:31
+============================================================
+Checking 1 position(s)...
+  EFA: HOLD | Price $101.53 | Stop $99.73 | P&L $-4.35
+------------------------------------------------------------
+Next check in 60 seconds...
 ```
 
-## Common Issues and Solutions
+When action is needed:
+```
+  EFA: >>> EXIT_STOP <<< - 2N stop hit: price 99.70 at or below stop 99.73
+```
 
-**Issue:** `yfinance` fails to download data for a symbol
-- **Solution:** Check if symbol is valid, verify internet connection, retry with `scripts/update_data.py`
+## Architecture (Clean Architecture)
 
-**Issue:** Dashboard shows "No price data available"
-- **Solution:** Run `python scripts/update_data.py` first to populate prices.db
+### Layer Structure
 
-**Issue:** Position size validation fails with "Insufficient capital"
-- **Solution:** Check `get_account_balance(trade_type)` - may need to close positions or add capital
+```
+src/
+├── domain/            # Core business logic (innermost, no dependencies)
+│   ├── models/        # Pydantic models (Position, Portfolio, Signal, etc.)
+│   ├── interfaces/    # Abstract ports (DataFeed ABC, Broker ABC, Repository ABCs)
+│   ├── services/      # Pure domain logic (SignalDetector, PositionMonitor, LimitChecker)
+│   └── rules.py       # TurtleRules configuration
+│
+├── application/       # Use cases (orchestration layer)
+│   ├── commands/      # Write operations (PlaceEntry, ExecutePyramid, ClosePosition, AlertLogger)
+│   ├── queries/       # Read operations (ScanMarkets, GetPortfolio)
+│   └── workflows/     # LangGraph orchestration (DailyWorkflow, MonitoringLoop)
+│
+├── adapters/          # Interface implementations (infrastructure)
+│   ├── data_feeds/    # IBKRDataFeed, YahooDataFeed, CompositeDataFeed
+│   ├── brokers/       # PaperBroker, IBKRBroker
+│   ├── repositories/  # PostgresNValueRepo, PostgresTradeRepo, PostgresAlertRepo, PostgresOpenPositionRepo
+│   └── mappers/       # SymbolMapper, IBKRMapper
+│
+└── infrastructure/    # Frameworks & drivers (outermost)
+    ├── database.py    # Neon connection pool
+    ├── config.py      # Environment configuration
+    ├── discord.py     # Discord webhook notifications
+    └── logging.py     # Structured logging
+```
 
-**Issue:** Signals detected but marked as invalid
-- **Solution:** Check `validate_position_size()` - likely insufficient capital or max positions reached
+**Dependency Rule:** Dependencies point INWARD. Domain knows nothing about outer layers.
 
-**Issue:** ATR calculation returns None
-- **Solution:** Ensure at least 20 days of price history exists in database
+### Critical Module: Position Monitor (`domain/services/position_monitor.py`)
 
-## Trading System Expectations
+The Position Monitor is the key module that was missing in v1. It continuously monitors positions with this priority order:
 
-The Turtle Trading system is designed for long-term trend following with these characteristics:
-- **Win Rate:** Typically 35-40% (most trades are small losses)
-- **Win/Loss Ratio:** Average win should be 2-3x average loss
-- **Trading Edge:** Calculated as (Win% × Avg Win) - (Loss% × Avg Loss)
-- **Expectancy:** System is profitable when edge is positive despite low win rate
-- **Drawdowns:** Expect 15-25% drawdowns during choppy markets
-- **Best Performance:** Strong trending markets (bull or bear runs)
+1. **Stop hit** (2N hard stop) → EXIT_STOP
+2. **Breakout exit** (10/20-day) → EXIT_BREAKOUT
+3. **Pyramid trigger** (+½N from last entry) → PYRAMID
+4. **No action** → HOLD
 
-The system's profitability comes from letting winners run (captured by 20-day exit) while cutting losers quickly (2×ATR stop loss).
+### Stop Coverage Safeguard (`scripts/monitor_positions.py`)
+
+Every share MUST have a stop order. The `verify_stop_coverage()` function runs:
+- On startup
+- At the beginning of each monitoring cycle
+
+It detects and fixes:
+- Positions with no stops at all
+- Positions with partial stops (e.g., 465 shares but stop only covers 213)
+
+This can happen when pyramid orders fill in batches while margin is tight, leaving some shares unprotected.
+
+### Data Flow
+
+Market Data (IBKR primary, Yahoo backup) → N/Donchian calculations → Strategy Engine (signals) + Position Monitor (exits/pyramids) → Portfolio Manager → Execution Gateway → Audit Log
+
+## Turtle Trading Rules Quick Reference
+
+**Full verified rules:** See `docs/RULES.md` (17 rules from Faith/Covel/Parker sources)
+
+### Entries
+- **S1**: 20-day breakout (skip if last S1 was winner)
+- **S2**: 55-day breakout (always take - failsafe)
+
+### Exits
+- **S1**: 10-day opposite breakout
+- **S2**: 20-day opposite breakout
+- **Hard stop**: 2N from entry (non-negotiable)
+
+### Pyramiding
+- Add 1 unit at +½N intervals from last entry (Rule 11)
+- Move ALL stops to 2N below newest entry (Rule 12)
+- Maximum 4 units per market
+
+### Position Limits
+- 4 units per market
+- 6 units correlated (e.g., MGC + SIL = metals)
+- **Modern mode (default):** 20% total portfolio risk cap (for 228+ markets)
+- **Original mode:** 12 units total (for historical validation with ~20 markets)
+- Mode controlled by `USE_RISK_CAP_MODE` in `rules.py`
+
+### N Calculation
+- N = 20-day ATR with Wilders smoothing
+- Formula: `((19 × Prev_N) + Current_TR) / 20`
+- TOS equivalent: `ATR(20, WILDERS)`
+
+### Risk & Sizing
+- Risk per unit: 0.5% of notional equity (Parker modern rule)
+- Unit = (0.005 × Notional Equity) / (N × Point Value)
+
+### Drawdown Rule (Rule 5)
+- 10% drawdown → reduce notional equity by 20%
+- Sizing uses notional equity, not actual
+
+## IBKR Configuration
+
+- **Paper Trading**: Port 7497, Account DUP318628
+- **Live Trading**: Port 7496
+- **Gateway**: Port 4002 (paper) / 4001 (live)
+- TWS/Gateway runs on Mac Mini (local)
+
+### ib_insync API Notes
+
+**Important:** `openOrders()` vs `openTrades()`:
+- `ib.openOrders()` returns `Order` objects (no `.contract` attribute)
+- `ib.openTrades()` returns `Trade` objects with both `.order` and `.contract`
+- Always use `openTrades()` when you need contract info for open orders
+
+**Critical:** After-hours "PreSubmitted" orders are invisible to `openTrades()`:
+- Orders placed after market close go to "PreSubmitted" status
+- `ib.openTrades()` does NOT return PreSubmitted orders!
+- Must use `await ib.reqAllOpenOrdersAsync()` then `ib.trades()` to see ALL orders
+- Failure to do this causes duplicate orders when checking for existing stops
+
+**Best Practice:** Use bracket orders for entries with stops:
+- `ib.bracketOrder()` links parent order + stop loss + optional take profit
+- Stop only activates when parent fills - no orphan entries without stops
+- Critical for after-hours orders that queue until market open
+
+### Keeping IBKR Connected
+
+TWS disconnects for several reasons. Here's how to prevent issues:
+
+**1. Use IB Gateway instead of TWS** (Recommended)
+- IB Gateway is headless and more stable than TWS
+- **Download:** https://www.interactivebrokers.com/en/trading/ibgateway-stable.php
+- Same ports, less resource usage, fewer disconnects
+- Configure: Settings → API → Enable Socket Clients, port 7497
+
+**2. TWS Auto-Restart Settings** (if using TWS)
+In TWS: Edit → Global Configuration → API → Settings:
+- ✓ Enable ActiveX and Socket Clients
+- ✓ Allow connections from localhost only
+- ✓ Read-Only API (disable for trading)
+- Set "Trusted IPs" to 127.0.0.1
+
+In TWS: Edit → Global Configuration → Lock and Exit:
+- Set "Auto restart" time (e.g., 11:45 PM ET - after market close)
+- ✓ "Auto logoff" disabled (or set very late)
+
+**3. Keep Mac Mini Awake**
+```bash
+# Prevent sleep (run in terminal on Mac Mini)
+caffeinate -d -i -s &
+
+# Or use pmset (permanent)
+sudo pmset -a sleep 0
+sudo pmset -a disksleep 0
+```
+
+**4. Common Disconnect Causes**
+- **Daily restart**: TWS restarts daily ~11:45 PM ET (configurable)
+- **Weekend maintenance**: IBKR servers down Sat night
+- **Inactivity timeout**: 2FA re-authentication required periodically
+- **Network issues**: Check Mac Mini network stability
+
+**5. Monitor Reconnection** (added 2026-02-02)
+The position monitor now auto-reconnects when IBKR disconnects:
+```
+IBKR connection lost, attempting to reconnect...
+Reconnection attempt 1/3...
+Reconnected to IBKR: ['DUP318628']
+```
+
+After 10 consecutive failures, the monitor exits so launchd can restart it fresh.
+
+If reconnection fails repeatedly, check:
+1. Is TWS/Gateway running? `pgrep -l -f "tws\|gateway"`
+2. Is the API port open? `nc -z 127.0.0.1 7497 && echo "Port open"`
+3. Restart TWS/Gateway manually if needed
+
+## Implementation Plan
+
+**25 testable milestones** (1-3 days each) with automated tests + manual TOS comparison.
+
+See `docs/plans/2026-01-27-implementation-plan.md` for full details.
+
+### Milestone Groups
+- **Foundation (M1-M4)**: Project setup, IBKR connection, Pydantic models, N calculator
+- **Market Data (M5-M8)**: Donchian, Yahoo backup, composite feed, N persistence
+- **Strategy (M9-M12)**: Signal detector, S1 filter, scanner, LangGraph skeleton
+- **Portfolio (M13-M17)**: Position model, sizing, limits, Position Monitor
+- **Execution (M18-M21)**: Broker interface, IBKR orders, stop modification
+- **Integration (M22-M25)**: Audit logging, workflow, monitoring loop, Docker
+
+## Key Specifications
+
+Original specs in `docs/bot/`:
+- `01-overview-and-domain.md` - Domain model, bounded contexts
+- `02-pydantic-models.md` - Complete model specifications
+- `03-position-monitor.md` - Position monitoring logic
+- `04-module-implementations.md` - Implementation details
+- `05-implementation-and-reference.md` - Phases, file structure, DB schema
+- `06-data-sources.md` - IBKR/Yahoo integration details
+
+Implementation plans in `docs/plans/`:
+- `2026-01-27-implementation-plan.md` - 25 testable milestones with Clean Architecture
+- `2026-01-27-architecture-review.md` - DDD/Clean Architecture analysis
+- `2026-01-29-alerts-logging-design.md` - Dashboard alerts/positions logging (implemented)
+
+## Recent Bug Fixes
+
+| Date | Bug | Fix | File |
+|------|-----|-----|------|
+| 2026-02-12 | **MARGIN CALL** - IBKR force-liquidated positions (VNQ, TLT, partial XLE) | **Cash Turtle Mode** - Use SettledCash instead of BuyingPower. No leverage. Block trades when cash < notional. Turtle rules designed for futures (5% margin), not stocks (50% Reg T). | `daily_run.py`, `monitor_positions.py` |
+| 2026-02-11 | Partial stop coverage after pyramid batches | Add `verify_stop_coverage()` - checks stop qty matches position qty, places gap fills on startup and each cycle | `monitor_positions.py` |
+| 2026-02-11 | No margin check before pyramids | Check available funds before pyramid orders, skip if insufficient | `monitor_positions.py` |
+| 2026-02-10 | No margin check before entries | Check buying power before placing orders, skip if insufficient | `daily_run.py` |
+| 2026-02-10 | Positions could lose stops after restart | Add startup verification that all positions have stops | `monitor_positions.py` |
+| 2026-02-10 | Entry orders placed without stops after-hours | Use IBKR bracket orders to link entry + stop - stop activates when entry fills | `daily_run.py` |
+| 2026-02-10 | Duplicate stop orders created after-hours | Use `reqAllOpenOrdersAsync()` + `ib.trades()` instead of `openTrades()` to see PreSubmitted orders | `monitor_positions.py`, `daily_run.py` |
+| 2026-02-09 | `get_open_orders()` failed with AttributeError | Changed from `openOrders()` to `openTrades()` - Order objects don't have `.contract`, Trade objects do | `ibkr_broker.py` |
+| 2026-02-04 | Donchian channels included current bar | Added `exclude_current=True` for live signal detection | `channels.py` |
+| 2026-02-04 | Signals missed due to channel bug | Fixed - QQQ SHORT, XLE LONG detected | `daily_run.py`, `monitor_positions.py` |
+| 2026-02-04 | S2 redundant when S1 triggers same direction | S1 now suppresses S2 for same direction | `signal_detector.py` |
+| 2026-02-04 | No Discord notifications | Added webhook integration | `discord.py`, `log_alert.py` |
+
+## Validation Criteria
+
+- N calculations must match TOS ATR(20, WILDERS) within 0.5%
+- Donchian channels must match TradingView exactly (excluding current bar)
+- Signal generation must match manual tracking
+- Pyramid triggers at correct +½N levels
+- S1 takes priority over S2 when both trigger same direction

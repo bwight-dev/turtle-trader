@@ -1,0 +1,126 @@
+# Turtle Trading Bot - Docker Compose Configuration
+# For deployment on Unraid or other Docker hosts
+
+version: '3.8'
+
+services:
+  # Main trading bot service
+  turtle-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: turtle-trading-bot
+    restart: unless-stopped
+
+    environment:
+      # Database (Neon PostgreSQL)
+      - DATABASE_URL=${DATABASE_URL}
+
+      # IBKR Connection
+      - IBKR_HOST=${IBKR_HOST:-host.docker.internal}
+      - IBKR_PORT=${IBKR_PORT:-7497}
+      - IBKR_CLIENT_ID=${IBKR_CLIENT_ID:-1}
+      - IBKR_PAPER=${IBKR_PAPER:-true}
+
+      # Trading configuration
+      - TRADING_MODE=${TRADING_MODE:-paper}
+      - DRY_RUN=${DRY_RUN:-true}
+      - RISK_PER_UNIT=${RISK_PER_UNIT:-0.005}
+
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FORMAT=${LOG_FORMAT:-json}
+
+      # Timezone
+      - TZ=${TZ:-America/New_York}
+
+    volumes:
+      # Persist logs
+      - ./logs:/app/logs
+      # Persist local data (if any)
+      - ./data:/app/data
+
+    # Health check (overrides Dockerfile if needed)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    # Network for IBKR connection
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Monitoring loop service (runs continuously during market hours)
+  turtle-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: turtle-monitor
+    restart: unless-stopped
+
+    command: ["python", "-m", "scripts.monitor"]
+
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - IBKR_HOST=${IBKR_HOST:-host.docker.internal}
+      - IBKR_PORT=${IBKR_PORT:-7497}
+      - IBKR_CLIENT_ID=${IBKR_CLIENT_ID:-2}
+      - IBKR_PAPER=${IBKR_PAPER:-true}
+      - TRADING_MODE=${TRADING_MODE:-paper}
+      - DRY_RUN=${DRY_RUN:-true}
+      - CHECK_INTERVAL_SECONDS=${CHECK_INTERVAL_SECONDS:-60}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - TZ=${TZ:-America/New_York}
+
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Only start monitor if bot is healthy
+    depends_on:
+      turtle-bot:
+        condition: service_healthy
+
+# Volume definitions (optional, for named volumes)
+volumes:
+  logs:
+  data:
+
+# Network configuration
+networks:
+  default:
+    name: turtle-network
