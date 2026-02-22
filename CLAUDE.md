@@ -25,8 +25,8 @@ Turtle Trading Bot is a Python algorithmic trading system implementing classic T
 
 ### Current Status
 - **Paper Account**: DUP318628 (IBKR)
-- **Position Monitor**: Running via launchd (every 60s)
-- **Daily Scanner**: Every hour :30, 7:30 AM-3:30 PM Mon-Fri (9 runs/day)
+- **Position Monitor**: Runs every 60s
+- **Daily Scanner**: Runs 9x/day during market hours
 - **Discord Alerts**: Webhook notifications for signals
 - **Event Streaming**: Full audit trail with context capture
 - **Cash Turtle Mode**: No margin/leverage - trades only with settled cash
@@ -187,68 +187,6 @@ pytest tests/backtest/
 
 # Note: When position monitor is running, some IBKR integration tests
 # will show "client id already in use" errors - these are not real failures.
-# Stop the monitor first for clean test runs:
-#   launchctl unload ~/Library/LaunchAgents/com.turtle.monitor.plist
-```
-
-## Scheduled Tasks (launchd)
-
-Two scheduled tasks run on macOS via launchd.
-
-### Task Configuration
-
-| Task | Schedule (Pacific) | Script | Log File |
-|------|----------|--------|----------|
-| Market Scanner | Every hour :30, 7:30 AM–3:30 PM Mon-Fri | `scripts/daily_run.py` | `logs/daily.log` |
-| Position Monitor | Every 60 seconds (continuous) | `scripts/monitor_positions.py` | `logs/monitor.error.log` |
-
-**Scanner runs 9 times per day** (every hour on the :30):
-- 7:30 AM PT (10:30 AM ET) through 3:30 PM PT (6:30 PM ET)
-- Covers pre-market through after close
-
-Duplicate signals are automatically deduplicated - only one alert per symbol/direction/system per day.
-
-### Plist Locations
-```
-~/Library/LaunchAgents/com.turtle.daily.plist
-~/Library/LaunchAgents/com.turtle.monitor.plist
-```
-
-### Quick Monitoring Commands
-
-```bash
-# Check job status
-launchctl list | grep turtle
-
-# Watch position monitor in real-time
-tail -f logs/monitor.error.log
-
-# Watch daily scanner
-tail -f logs/daily.error.log
-
-# Status dashboard (positions, jobs, logs)
-python scripts/status.py
-
-# Stop/start monitor
-launchctl unload ~/Library/LaunchAgents/com.turtle.monitor.plist
-launchctl load ~/Library/LaunchAgents/com.turtle.monitor.plist
-```
-
-### Monitor Output Example
-```
-[Cycle 5]
-============================================================
-MONITORING CYCLE - 2026-01-29 13:15:31
-============================================================
-Checking 1 position(s)...
-  EFA: HOLD | Price $101.53 | Stop $99.73 | P&L $-4.35
-------------------------------------------------------------
-Next check in 60 seconds...
-```
-
-When action is needed:
-```
-  EFA: >>> EXIT_STOP <<< - 2N stop hit: price 99.70 at or below stop 99.73
 ```
 
 ## Architecture (Clean Architecture)
@@ -351,7 +289,7 @@ Market Data (IBKR primary, Yahoo backup) → N/Donchian calculations → Strateg
 - **Paper Trading**: Port 7497, Account DUP318628
 - **Live Trading**: Port 7496
 - **Gateway**: Port 4002 (paper) / 4001 (live)
-- TWS/Gateway runs on Mac Mini (local)
+- TWS/Gateway must be running and accessible
 
 ### ib_insync API Notes
 
@@ -392,23 +330,13 @@ In TWS: Edit → Global Configuration → Lock and Exit:
 - Set "Auto restart" time (e.g., 11:45 PM ET - after market close)
 - ✓ "Auto logoff" disabled (or set very late)
 
-**3. Keep Mac Mini Awake**
-```bash
-# Prevent sleep (run in terminal on Mac Mini)
-caffeinate -d -i -s &
-
-# Or use pmset (permanent)
-sudo pmset -a sleep 0
-sudo pmset -a disksleep 0
-```
-
-**4. Common Disconnect Causes**
+**3. Common Disconnect Causes**
 - **Daily restart**: TWS restarts daily ~11:45 PM ET (configurable)
 - **Weekend maintenance**: IBKR servers down Sat night
 - **Inactivity timeout**: 2FA re-authentication required periodically
-- **Network issues**: Check Mac Mini network stability
+- **Network issues**: Check network stability
 
-**5. Monitor Reconnection** (added 2026-02-02)
+**4. Monitor Reconnection** (added 2026-02-02)
 The position monitor now auto-reconnects when IBKR disconnects:
 ```
 IBKR connection lost, attempting to reconnect...
@@ -416,11 +344,11 @@ Reconnection attempt 1/3...
 Reconnected to IBKR: ['DUP318628']
 ```
 
-After 10 consecutive failures, the monitor exits so launchd can restart it fresh.
+After 10 consecutive failures, the monitor exits so the process supervisor can restart it.
 
 If reconnection fails repeatedly, check:
-1. Is TWS/Gateway running? `pgrep -l -f "tws\|gateway"`
-2. Is the API port open? `nc -z 127.0.0.1 7497 && echo "Port open"`
+1. Is TWS/Gateway running?
+2. Is the API port open?
 3. Restart TWS/Gateway manually if needed
 
 ## Implementation Plan
